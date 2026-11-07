@@ -3,6 +3,16 @@ import unittest
 from datetime import datetime, timezone, timedelta
 
 class WindowsTests(unittest.TestCase):
+    def test_preview_fixtures_are_synthetic_and_support_empty_and_many(self):
+        from windows_gui import preview_data
+        now = datetime(2026, 11, 7, tzinfo=timezone.utc)
+        for count in (0, 3, 25):
+            data = preview_data(count, now)
+            self.assertEqual(len(data['accounts']), count * 2)
+            self.assertTrue(all(a['key'].startswith('fixture') and a['email'] is None for a in data['accounts']))
+            self.assertEqual(len(data['usage']['codex']), count)
+        self.assertEqual(len(preview_data(3, now)['resetStatuses']), 3)
+
     def test_missing_primary_uses_full_width_weekly_and_explicit_reason(self):
         from windows_gui import quota_lanes, recommendation_reason, provider_winner
         now = datetime(2026, 11, 7, tzinfo=timezone.utc)
