@@ -8,7 +8,7 @@ python -m unittest discover -s $source -p 'tests_*.py'
 Check-Exit
 python -m PyInstaller --noconfirm --onedir --name aiaccounts-helper --paths "$source/vendor/claude-switcher" --hidden-import windows_backend --hidden-import windows_usage --hidden-import claude_switch --hidden-import cs_config --hidden-import cs_sync --hidden-import cs_share --collect-all cryptography --distpath "$build/frozen" --workpath "$build/helper-work" --specpath $build "$source/backend.py"
 Check-Exit
-python -m PyInstaller --noconfirm --onedir --windowed --name 'AI Accounts' --hidden-import backend --distpath "$build/frozen" --workpath "$build/gui-work" --specpath $build "$source/windows_gui.py"
+python -m PyInstaller --noconfirm --onedir --windowed --name 'AI Accounts' --manifest "$source/windows.manifest" --hidden-import backend --distpath "$build/frozen" --workpath "$build/gui-work" --specpath $build "$source/windows_gui.py"
 Check-Exit
 $payload = Join-Path $build 'frozen/AI Accounts'
 Copy-Item -Recurse "$build/frozen/aiaccounts-helper" "$payload/backend"

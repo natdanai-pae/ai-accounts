@@ -11,6 +11,26 @@ import threading
 import time
 from datetime import datetime, timezone
 
+def system_dpi(user32=None):
+    if user32 is None:
+        if os.name != 'nt':
+            return 96
+        import ctypes
+        user32 = ctypes.windll.user32
+    # Source previews need the same system awareness as the packaged manifest, before Tk creates HWNDs.
+    user32.SetProcessDPIAware()
+    if not user32.IsProcessDPIAware():
+        raise RuntimeError('Windows could not enable system DPI awareness')
+    dpi = user32.GetDpiForSystem()
+    if not isinstance(dpi, int) or isinstance(dpi, bool) or dpi <= 0:
+        raise RuntimeError('Windows returned an invalid system DPI')
+    return dpi
+
+def scaled_pixels(value, dpi):
+    if isinstance(value, tuple):
+        return tuple(scaled_pixels(part, dpi) for part in value)
+    return int(value * dpi / 96 + 0.5)
+
 def date(value):
     try:
         result = datetime.fromisoformat(value.replace('Z', '+00:00'))
@@ -194,19 +214,22 @@ def preview_data(count=3, now=None):
     return {'accounts': accounts, 'usage': usage, 'resetStatuses': resets}
 
 def main():
+    dpi = system_dpi()
+    dp = lambda value: scaled_pixels(value, dpi)
     import tkinter as tk
     from tkinter import ttk, messagebox, simpledialog
     root = tk.Tk()
+    root.tk.call('tk', 'scaling', dpi / 72)
     root.title('AI Accounts • Windows beta')
-    root.geometry('1120x850')
-    root.minsize(940, 680)
+    root.geometry(f'{dp(1120)}x{dp(850)}')
+    root.minsize(dp(940), dp(680))
     colors = {'base': '#F3F6FA', 'card': '#FFFFFF', 'ink': '#213247', 'muted': '#627386', 'teal': '#087F8C', 'tint': '#E3F2F3', 'sidebar': '#203448'}
     root.configure(background=colors['base'])
     root.option_add('*Font', ('Leelawadee UI', 10))
     style = ttk.Style(root)
     style.theme_use('clam')
     style.configure('.', font=('Leelawadee UI', 10), background=colors['base'], foreground=colors['ink'])
-    style.configure('TButton', padding=(10, 5), background='#EAF0F5', borderwidth=0)
+    style.configure('TButton', padding=dp((10, 5)), background='#EAF0F5', borderwidth=0)
     style.map('TButton', background=[('active', '#DDE8EF')])
     style.configure('Accent.TButton', foreground='white', background=colors['teal'])
     style.map('Accent.TButton', background=[('active', '#075A53')])
@@ -218,18 +241,18 @@ def main():
     style.configure('Ribbon.TLabel', background=colors['tint'], foreground=colors['teal'])
     style.configure('Side.TFrame', background=colors['sidebar'])
     style.configure('Side.TLabel', background=colors['sidebar'], foreground='#E4ECF4')
-    style.configure('Side.TButton', background='#2D465D', foreground='white', anchor='w', padding=(12, 9), borderwidth=0)
+    style.configure('Side.TButton', background='#2D465D', foreground='white', anchor='w', padding=dp((12, 9)), borderwidth=0)
     style.map('Side.TButton', background=[('active', '#395970')], foreground=[('active', 'white')])
-    style.configure('Side.TCheckbutton', background=colors['sidebar'], foreground='#E4ECF4', padding=(0, 8))
+    style.configure('Side.TCheckbutton', background=colors['sidebar'], foreground='#E4ECF4', padding=dp((0, 8)))
     style.map('Side.TCheckbutton', background=[('active', colors['sidebar'])], foreground=[('active', 'white')])
-    style.configure('Quota.Horizontal.TProgressbar', background=colors['teal'], troughcolor='#E2EBEF', borderwidth=0, thickness=5)
+    style.configure('Quota.Horizontal.TProgressbar', background=colors['teal'], troughcolor='#E2EBEF', borderwidth=0, thickness=dp(5))
     smoke = '--self-test' in sys.argv
     preview = '--preview' in sys.argv or '--preview-empty' in sys.argv
     synthetic = smoke or preview
     if smoke:
         root.withdraw()
         # CI desktops may be smaller than the viewport under test.
-        root.maxsize(1120, 850)
+        root.maxsize(dp(1120), dp(850))
         assert recommendation({'updatedAt': None})[0] is None
     resources = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
     helper = resources / 'backend/aiaccounts-helper.exe'
@@ -255,28 +278,28 @@ def main():
     except Exception:
         pass
     notifications = tk.BooleanVar(value=preferences['notifications'])
-    sidebar = ttk.Frame(root, style='Side.TFrame', width=180, padding=(14, 20))
+    sidebar = ttk.Frame(root, style='Side.TFrame', width=dp(180), padding=dp((14, 20)))
     sidebar.pack(side='left', fill='y')
     sidebar.pack_propagate(False)
     ttk.Label(sidebar, text='AI Accounts', style='Side.TLabel', font=('Segoe UI', 18, 'bold')).pack(anchor='w')
-    ttk.Label(sidebar, text='บัญชีและโควตา AI', style='Side.TLabel', font=('Leelawadee UI', 9)).pack(anchor='w', pady=(3, 28))
-    main_area = ttk.Frame(root, padding=(20, 0, 16, 10))
+    ttk.Label(sidebar, text='บัญชีและโควตา AI', style='Side.TLabel', font=('Leelawadee UI', 9)).pack(anchor='w', pady=dp((3, 28)))
+    main_area = ttk.Frame(root, padding=dp((20, 0, 16, 10)))
     main_area.pack(side='left', fill='both', expand=True)
-    toolbar = ttk.Frame(main_area, padding=(0, 20, 0, 10))
+    toolbar = ttk.Frame(main_area, padding=dp((0, 20, 0, 10)))
     toolbar.pack(fill='x')
     heading_copy = ttk.Frame(toolbar)
     heading_copy.pack(side='left', fill='x', expand=True)
     ttk.Label(heading_copy, text='บัญชีของคุณ' if not preview else 'ตัวอย่างหน้าจอ', font=('Leelawadee UI', 22, 'bold')).pack(anchor='w')
     status = tk.StringVar(value='กำลังอ่านข้อมูลบัญชีและโควตา…')
-    status_label = ttk.Label(heading_copy, textvariable=status, style='Muted.TLabel', wraplength=620, font=('Leelawadee UI', 9), cursor='hand2')
-    status_label.pack(anchor='w', pady=(3, 0), fill='x')
-    status_label.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(180, e.width)))
+    status_label = ttk.Label(heading_copy, textvariable=status, style='Muted.TLabel', wraplength=dp(620), font=('Leelawadee UI', 9), cursor='hand2')
+    status_label.pack(anchor='w', pady=dp((3, 0)), fill='x')
+    status_label.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(dp(180), e.width)))
     status_label.bind('<Button-1>', lambda e: messagebox.showinfo('สถานะล่าสุด', state.get('lastError') or status.get(), parent=root))
     ttk.Button(toolbar, text='รีเฟรช', command=lambda: work(['list'])).pack(side='right')
     actions = ttk.Frame(sidebar, style='Side.TFrame')
     actions.pack(fill='x')
     notice = tk.StringVar(value='ตัวอย่างข้อมูลจำลอง • ไม่เชื่อมบัญชีจริงและไม่บันทึกการตั้งค่า' if preview else 'เลือกบัญชีได้เองทุกครั้ง • รีเฟรชโควตาอัตโนมัติทุก 5 นาที')
-    ttk.Label(main_area, textvariable=notice, foreground=colors['teal'], wraplength=850, padding=(0, 2, 0, 14), font=('Leelawadee UI', 9)).pack(fill='x')
+    ttk.Label(main_area, textvariable=notice, foreground=colors['teal'], wraplength=dp(850), padding=dp((0, 2, 0, 14)), font=('Leelawadee UI', 9)).pack(fill='x')
     columns = ttk.Frame(main_area)
     columns.pack(fill='both', expand=True)
     panels, ribbons, scroll_surfaces = {}, {}, []
@@ -284,16 +307,16 @@ def main():
         column = 0 if provider == 'codex' else 1
         columns.columnconfigure(column, weight=1, uniform='providers')
         columns.rowconfigure(0, weight=1)
-        pane = ttk.Frame(columns, padding=(0, 0, 8 if column == 0 else 0, 0))
+        pane = ttk.Frame(columns, padding=dp((0, 0, 8 if column == 0 else 0, 0)))
         pane.grid(row=0, column=column, sticky='nsew')
         heading = ttk.Frame(pane)
-        heading.pack(fill='x', pady=(0, 10))
+        heading.pack(fill='x', pady=dp((0, 10)))
         ttk.Label(heading, text=provider.title(), font=('Segoe UI', 18, 'bold')).pack(side='left')
         ttk.Button(heading, text='+ เพิ่มบัญชี', command=lambda p=provider: add(p)).pack(side='right')
-        ribbon = ttk.Frame(pane, style='Ribbon.TFrame', padding=(10, 7))
-        ribbon.pack(fill='x', pady=(0, 6))
+        ribbon = ttk.Frame(pane, style='Ribbon.TFrame', padding=dp((10, 7)))
+        ribbon.pack(fill='x', pady=dp((0, 6)))
         ribbons[provider] = ribbon
-        canvas = tk.Canvas(pane, highlightthickness=0, width=350, background=colors['base'])
+        canvas = tk.Canvas(pane, highlightthickness=0, width=dp(350), background=colors['base'])
         scroll = ttk.Scrollbar(pane, orient='vertical', command=canvas.yview)
         def update_scroll(first, last, bar=scroll, surface=canvas):
             bar.set(first, last)
@@ -447,7 +470,7 @@ def main():
         populated = {p: any(a['provider'] == p for a in state['accounts']) for p in ('codex', 'claude')}
         for index, provider in enumerate(('codex', 'claude')):
             only_one = sum(populated.values()) == 1
-            columns.columnconfigure(index, uniform='' if only_one else 'providers', weight=(1 if populated[provider] else 0) if only_one else 1, minsize=220 if only_one and not populated[provider] else 0)
+            columns.columnconfigure(index, uniform='' if only_one else 'providers', weight=(1 if populated[provider] else 0) if only_one else 1, minsize=dp(220 if only_one and not populated[provider] else 0))
         for provider, panel in panels.items():
             for widget in panel.winfo_children():
                 widget.destroy()
@@ -456,9 +479,9 @@ def main():
             ribbon = ribbons[provider]
             canvas = scroll_surfaces[0 if provider == 'codex' else 1][1]
             canvas.pack_configure(expand=bool(accounts), fill='both' if accounts else 'x')
-            canvas.configure(height=240 if not accounts else 400, width=200 if not accounts else 350)
+            canvas.configure(height=dp(240 if not accounts else 400), width=dp(200 if not accounts else 350))
             if accounts:
-                ribbon.pack(fill='x', pady=(0, 10), before=canvas)
+                ribbon.pack(fill='x', pady=dp((0, 10)), before=canvas)
             else:
                 ribbon.pack_forget()
             for widget in ribbon.winfo_children():
@@ -470,48 +493,48 @@ def main():
                 heading.pack(fill='x')
                 ttk.Label(heading, text='แนะนำบัญชี ' + str(preferences['numbers'][winner['id']]), style='Ribbon.TLabel', font=('Leelawadee UI', 11, 'bold')).pack(side='left')
                 ttk.Label(heading, text=f'เหลือ {100-week["usedPercent"]:g}%', style='Ribbon.TLabel').pack(side='right')
-                reason_label = ttk.Label(ribbon, text=recommendation_reason(accounts, values, winner, preferences['numbers']), style='Ribbon.TLabel', wraplength=370, font=('Leelawadee UI', 9))
-                reason_label.pack(anchor='w', pady=(3, 0), fill='x')
-                reason_label.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(160, e.width)))
+                reason_label = ttk.Label(ribbon, text=recommendation_reason(accounts, values, winner, preferences['numbers']), style='Ribbon.TLabel', wraplength=dp(370), font=('Leelawadee UI', 9))
+                reason_label.pack(anchor='w', pady=dp((3, 0)), fill='x')
+                reason_label.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(dp(160), e.width)))
             else:
                 ttk.Label(ribbon, text='ยังไม่มีบัญชีที่แนะนำ', style='Ribbon.TLabel', font=('Leelawadee UI', 11, 'bold')).pack(anchor='w')
-                unavailable = ttk.Label(ribbon, text='รีเฟรชโควตาและเวลารีเซ็ต • ข้อมูลต้องไม่เกิน 15 นาที', style='Ribbon.TLabel', wraplength=360)
-                unavailable.pack(anchor='w', pady=3, fill='x')
-                unavailable.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(160, e.width)))
+                unavailable = ttk.Label(ribbon, text='รีเฟรชโควตาและเวลารีเซ็ต • ข้อมูลต้องไม่เกิน 15 นาที', style='Ribbon.TLabel', wraplength=dp(360))
+                unavailable.pack(anchor='w', pady=dp(3), fill='x')
+                unavailable.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(dp(160), e.width)))
             if not accounts:
-                empty = ttk.Frame(panel, style='Card.TFrame', padding=(16, 20))
+                empty = ttk.Frame(panel, style='Card.TFrame', padding=dp((16, 20)))
                 empty.pack(fill='x')
                 ttk.Label(empty, text='เริ่มใช้ ' + provider.title(), style='Card.TLabel', font=('Leelawadee UI', 14, 'bold')).pack(anchor='w')
-                instruction = ttk.Label(empty, text='เพิ่มบัญชีแล้วเข้าสู่ระบบ\nจากนั้นเชื่อมโควตาจากแถบด้านซ้าย', style='CardMuted.TLabel', wraplength=190)
-                instruction.pack(anchor='w', pady=(8, 16), fill='x')
-                instruction.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(140, e.width)))
+                instruction = ttk.Label(empty, text='เพิ่มบัญชีแล้วเข้าสู่ระบบ\nจากนั้นเชื่อมโควตาจากแถบด้านซ้าย', style='CardMuted.TLabel', wraplength=dp(190))
+                instruction.pack(anchor='w', pady=dp((8, 16)), fill='x')
+                instruction.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(dp(140), e.width)))
                 ttk.Button(empty, text='+ เพิ่มบัญชีแรก', style='Accent.TButton', command=lambda p=provider: add(p)).pack(anchor='w')
             for account in accounts:
                 usage = values.get(account['id'])
-                row = ttk.Frame(panel, padding=(12, 7), style='Card.TFrame')
-                row.pack(fill='x', pady=(0, 8))
+                row = ttk.Frame(panel, padding=dp((12, 7)), style='Card.TFrame')
+                row.pack(fill='x', pady=dp((0, 8)))
                 top = ttk.Frame(row, style='Card.TFrame')
                 top.pack(fill='x')
                 label = str(account.get('label') or account['key'])
                 label = label[:18] + '…' if len(label) > 19 else label
-                tk.Label(top, text=str(preferences['numbers'][account['id']]), font=('Segoe UI', 22, 'bold'), background=colors['tint'], foreground=colors['teal'], width=2).pack(side='left', padx=(0, 10))
+                tk.Label(top, text=str(preferences['numbers'][account['id']]), font=('Segoe UI', 22, 'bold'), background=colors['tint'], foreground=colors['teal'], width=2).pack(side='left', padx=dp((0, 10)))
                 identity = ttk.Frame(top, style='Card.TFrame')
                 identity.pack(side='left', fill='x', expand=True)
                 ttk.Label(identity, text=label, style='Card.TLabel', font=('Leelawadee UI', 11, 'bold')).pack(anchor='w')
                 ttk.Label(identity, text='แนะนำให้ใช้ตอนนี้' if winner and winner['id'] == account['id'] else 'บัญชี ' + str(preferences['numbers'][account['id']]), style='CardMuted.TLabel', font=('Leelawadee UI', 9)).pack(anchor='w')
                 ttk.Button(top, text='ใช้บัญชีนี้', style='Accent.TButton', command=lambda a=account: switch(a)).pack(side='right')
                 lanes = ttk.Frame(row, style='Card.TFrame')
-                lanes.pack(fill='x', pady=(6, 2))
+                lanes.pack(fill='x', pady=dp((6, 2)))
                 lane_items = quota_lanes(usage)
                 for index, (key, label) in enumerate(lane_items):
                     cell = ttk.Frame(lanes, style='Card.TFrame')
-                    cell.pack(fill='x', pady=2)
+                    cell.pack(fill='x', pady=dp(2))
                     window = (usage or {}).get(key) or {}
                     used = window.get('usedPercent')
                     valid = number(used) and 0 <= used <= 100
                     ttk.Label(cell, text=label, style='CardMuted.TLabel', width=7, font=('Leelawadee UI', 9)).pack(side='left')
                     ttk.Label(cell, text=f'{100-used:g}%' if valid else '—', style='Card.TLabel', width=4, font=('Segoe UI', 11, 'bold')).pack(side='left')
-                    ttk.Progressbar(cell, style='Quota.Horizontal.TProgressbar', maximum=100, value=100-used if valid else 0, length=40).pack(side='left', fill='x', expand=True, padx=(0, 8))
+                    ttk.Progressbar(cell, style='Quota.Horizontal.TProgressbar', maximum=100, value=100-used if valid else 0, length=dp(40)).pack(side='left', fill='x', expand=True, padx=dp((0, 8)))
                     reset = date(window.get('resetsAt'))
                     reset_label = reset.astimezone().strftime('%d/%m %H:%M') if reset else 'ไม่ทราบ'
                     ttk.Label(cell, text='รีเซ็ต ' + reset_label, style='CardMuted.TLabel', font=('Leelawadee UI', 9)).pack(side='right')
@@ -523,7 +546,7 @@ def main():
                 reset_info = state['resetStatuses'].get(account['id'], {})
                 count = reset_info.get('availableCount', (source.get('resetCredits') or {}).get('available'))
                 reset_line = ttk.Frame(row, style='Card.TFrame')
-                reset_line.pack(fill='x', pady=(5, 0))
+                reset_line.pack(fill='x', pady=dp((5, 0)))
                 stamp = reset_info.get('expiresAt')
                 try:
                     expiry = datetime.fromtimestamp(stamp, timezone.utc) if number(stamp) else None
@@ -533,12 +556,12 @@ def main():
                 ttk.Label(reset_line, text='รีเซ็ตฟรี ' + (str(count) + ' ครั้ง' if number(count) else 'ไม่ทราบ') + '\nหมดอายุ ' + expiry_text, style='CardMuted.TLabel', font=('Leelawadee UI', 9)).pack(side='left')
                 enabled = reset_command(account, reset_info, True, False) is not None
                 ttk.Button(reset_line, text='ดูข้อมูล', command=lambda a=account, u=usage: details(a, u)).pack(side='right')
-                ttk.Button(reset_line, text='ตรวจคำขอเดิม' if reset_info.get('uncertain') else 'รีเซ็ตฟรี', command=lambda a=account: request_reset(a), state='normal' if enabled else 'disabled').pack(side='right', padx=5)
+                ttk.Button(reset_line, text='ตรวจคำขอเดิม' if reset_info.get('uncertain') else 'รีเซ็ตฟรี', command=lambda a=account: request_reset(a), state='normal' if enabled else 'disabled').pack(side='right', padx=dp(5))
                 if not enabled:
                     reason = 'Claude ยังไม่รองรับรีเซ็ตจากแอปนี้' if provider == 'claude' else reset_reason(reset_info)
-                    reason_label = ttk.Label(row, text=reason, style='CardMuted.TLabel', font=('Leelawadee UI', 9), wraplength=360)
+                    reason_label = ttk.Label(row, text=reason, style='CardMuted.TLabel', font=('Leelawadee UI', 9), wraplength=dp(360))
                     reason_label.pack(anchor='w', fill='x')
-                    reason_label.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(160, e.width)))
+                    reason_label.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(dp(160), e.width)))
 
     def poll():
         try:
@@ -620,24 +643,24 @@ def main():
         messagebox.showinfo('การแจ้งเตือน', 'ปิดเป็นค่าเริ่มต้น เมื่อเปิดจะแจ้งในแอปและเล่นเสียง Windows\nไม่มีการส่ง Windows toast หรือข้อมูลอีเมล\n\nแจ้งเมื่อบัญชีแนะนำเปลี่ยน หรือรอบที่จำกัดการใช้งานจะรีเซ็ตภายใน 60 นาทีและยังมีโควตา\nเว้นอย่างน้อย 30 นาทีต่อผู้ให้บริการ และจำเหตุการณ์เพื่อไม่แจ้งซ้ำ\nข้อมูลเก่าหรืออ่านไม่สำเร็จจะไม่แจ้งเตือน\n\nรีเฟรชทุก 5 นาทีเฉพาะขณะเปิดแอป ไม่มีการสลับบัญชีอัตโนมัติ', parent=root)
 
     for title, command in [('เชื่อมข้อมูลโควตา', 'connect'), ('แชร์เซสชัน', 'setup')]:
-        ttk.Button(actions, text=title, style='Side.TButton', command=lambda c=command: work([c])).pack(fill='x', pady=(0, 7))
+        ttk.Button(actions, text=title, style='Side.TButton', command=lambda c=command: work([c])).pack(fill='x', pady=dp((0, 7)))
     context = tk.Toplevel(root)
     context.withdraw()
     context.title('บันทึกส่งต่อบริบท')
-    context.geometry('620x330')
+    context.geometry(f'{dp(620)}x{dp(330)}')
     context.configure(background=colors['base'])
     context.protocol('WM_DELETE_WINDOW', context.withdraw)
-    context_body = ttk.Frame(context, padding=16)
+    context_body = ttk.Frame(context, padding=dp(16))
     context_body.pack(fill='both', expand=True)
     def toggle_context():
         context.deiconify()
         context.lift()
-    ttk.Button(actions, text='บันทึกส่งต่อบริบท', style='Side.TButton', command=toggle_context).pack(fill='x', pady=(0, 24))
+    ttk.Button(actions, text='บันทึกส่งต่อบริบท', style='Side.TButton', command=toggle_context).pack(fill='x', pady=dp((0, 24)))
     ttk.Label(sidebar, text='การแจ้งเตือน', style='Side.TLabel', font=('Leelawadee UI', 10, 'bold')).pack(anchor='w')
     ttk.Checkbutton(sidebar, text='ข้อความและเสียง', style='Side.TCheckbutton', variable=notifications, command=notification_toggle).pack(anchor='w')
     ttk.Button(sidebar, text='ตั้งค่าการแจ้งเตือน', style='Side.TButton', command=notification_help).pack(fill='x')
-    ttk.Label(sidebar, text='ข้อมูลอยู่ในเครื่อง\nไม่สลับบัญชีอัตโนมัติ', style='Side.TLabel', font=('Leelawadee UI', 9)).pack(side='bottom', anchor='w', pady=4)
-    ttk.Label(context_body, text='บันทึกไว้แล้วคัดลอกไปวางในแชตใหม่ • ประวัติแชตจริงยังแยกตามผู้ให้บริการ', style='Muted.TLabel', wraplength=570).pack(anchor='w')
+    ttk.Label(sidebar, text='ข้อมูลอยู่ในเครื่อง\nไม่สลับบัญชีอัตโนมัติ', style='Side.TLabel', font=('Leelawadee UI', 9)).pack(side='bottom', anchor='w', pady=dp(4))
+    ttk.Label(context_body, text='บันทึกไว้แล้วคัดลอกไปวางในแชตใหม่ • ประวัติแชตจริงยังแยกตามผู้ให้บริการ', style='Muted.TLabel', wraplength=dp(570)).pack(anchor='w')
     editor = tk.Text(context_body, height=4, wrap='word', font=('Leelawadee UI', 10), background='white', foreground=colors['ink'], relief='solid', borderwidth=1)
     editor.pack(fill='x')
     context_path = private_dir / 'context.md'
@@ -668,8 +691,8 @@ def main():
         status.set('คัดลอกบริบทแล้ว • วางลงในแชตที่เลือก')
     context_actions = ttk.Frame(context_body)
     context_actions.pack(fill='x')
-    ttk.Button(context_actions, text='บันทึกในเครื่อง', command=save_context).pack(side='left', pady=5)
-    ttk.Button(context_actions, text='คัดลอกบริบท', command=copy_context).pack(side='left', padx=5)
+    ttk.Button(context_actions, text='บันทึกในเครื่อง', command=save_context).pack(side='left', pady=dp(5))
+    ttk.Button(context_actions, text='คัดลอกบริบท', command=copy_context).pack(side='left', padx=dp(5))
     def show_preview(count, one_provider=False):
         state.update(preview_data(count))
         if one_provider:
@@ -678,9 +701,9 @@ def main():
         status.set('ข้อมูลจำลอง • ไม่มีการเชื่อมต่อบัญชีจริง')
         render()
     if preview:
-        ttk.Label(sidebar, text='ตัวอย่างหน้าจอ', style='Side.TLabel', font=('Leelawadee UI', 10, 'bold')).pack(anchor='w', pady=(24, 6))
+        ttk.Label(sidebar, text='ตัวอย่างหน้าจอ', style='Side.TLabel', font=('Leelawadee UI', 10, 'bold')).pack(anchor='w', pady=dp((24, 6)))
         for title, count, one in [('6 บัญชี', 3, False), ('1 บัญชี / ยังไม่มี Claude', 1, True), ('ยังไม่มีบัญชี', 0, False), ('50 บัญชี', 25, False)]:
-            ttk.Button(sidebar, text=title, style='Side.TButton', command=lambda n=count, o=one: show_preview(n, o)).pack(fill='x', pady=3)
+            ttk.Button(sidebar, text=title, style='Side.TButton', command=lambda n=count, o=one: show_preview(n, o)).pack(fill='x', pady=dp(3))
         show_preview(0 if '--preview-empty' in sys.argv else 3)
         root.mainloop()
         return

@@ -3,6 +3,24 @@ import unittest
 from datetime import datetime, timezone, timedelta
 
 class WindowsTests(unittest.TestCase):
+    def test_system_dpi_awareness_and_scaled_dimensions(self):
+        from unittest.mock import Mock
+        from windows_gui import system_dpi, scaled_pixels
+        api = Mock()
+        api.IsProcessDPIAware.return_value = True
+        api.GetDpiForSystem.return_value = 144
+        self.assertEqual(system_dpi(api), 144)
+        self.assertEqual([call[0] for call in api.mock_calls], ['SetProcessDPIAware', 'IsProcessDPIAware', 'GetDpiForSystem'])
+        self.assertEqual(scaled_pixels((1120, 850), 144), (1680, 1275))
+        self.assertEqual(scaled_pixels(180, 144), 270)
+        self.assertEqual(scaled_pixels((12, 0, 8, 7), 144), (18, 0, 12, 11))
+        self.assertEqual(scaled_pixels((1120, 850), 96), (1120, 850))
+        api.SetProcessDPIAware.return_value = False  # The executable manifest already set it.
+        self.assertEqual(system_dpi(api), 144)
+        api.IsProcessDPIAware.return_value = False
+        with self.assertRaises(RuntimeError):
+            system_dpi(api)
+
     def test_preview_fixtures_are_synthetic_and_support_empty_and_many(self):
         from windows_gui import preview_data
         now = datetime(2026, 11, 7, tzinfo=timezone.utc)
