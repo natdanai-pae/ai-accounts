@@ -32,7 +32,7 @@ mkdir -p "$bundle/Contents/Resources"
 cp "$source_dir/assets/AppIcon.png" "$bundle/Contents/Resources/AppIcon.png"
 cp "$source_dir/assets/AppIcon.icns" "$bundle/Contents/Resources/AppIcon.icns"
 # Keep assertions enabled in the installed self-test executable.
-xcrun swiftc -Onone -target arm64-apple-macos14.0 -debug-prefix-map "$source_dir=/src" -framework AppKit "$source_dir/Main.swift" -o "$bundle/Contents/MacOS/AI Accounts"
+xcrun swiftc -Onone -target arm64-apple-macos14.0 -debug-prefix-map "$source_dir=/src" -framework AppKit -framework UserNotifications "$source_dir/Main.swift" -o "$bundle/Contents/MacOS/AI Accounts"
 "$bundle/Contents/MacOS/AI Accounts" --self-test
 /usr/bin/plutil -create xml1 "$bundle/Contents/Info.plist"
 /usr/bin/plutil -insert CFBundleIdentifier -string "$app_id" "$bundle/Contents/Info.plist"

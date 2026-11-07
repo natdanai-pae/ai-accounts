@@ -3,6 +3,87 @@ import unittest
 from datetime import datetime, timezone, timedelta
 
 class WindowsTests(unittest.TestCase):
+    def test_fresh_custom_account_starts_at_one(self):
+        from windows_gui import stable_numbers
+        first = {'id': 'codex:custom-id', 'provider': 'codex', 'key': 'custom-id'}
+        mapping = stable_numbers([first], {})
+        self.assertEqual(mapping, {'codex:custom-id': 1})
+        second = {'id': 'codex:second-id', 'provider': 'codex', 'key': 'second-id'}
+        self.assertEqual(stable_numbers([second], mapping)['codex:second-id'], 2)
+        claude = {'id': 'claude:custom-id', 'provider': 'claude', 'key': 'custom-id'}
+        self.assertEqual(stable_numbers([claude], {})[claude['id']], 1)
+
+    def test_stable_account_numbers_and_natural_order(self):
+        from windows_gui import stable_numbers, ordered_accounts
+        accounts = [{'id': 'codex:' + key, 'provider': 'codex', 'key': key} for key in ['account3', 'main', 'account2', 'new']]
+        mapping = stable_numbers(accounts, {})
+        self.assertEqual([mapping[a['id']] for a in accounts], [3, 1, 2, 4])
+        mapping = stable_numbers(accounts[::-1], mapping)
+        self.assertEqual([a['key'] for a in ordered_accounts(accounts, mapping)], ['main', 'account2', 'account3', 'new'])
+        more = [{'id': 'claude:' + k, 'provider': 'claude', 'key': k} for k in ['c', 'a', 'b']]
+        self.assertEqual([stable_numbers(more, {})[a['id']] for a in more], [3, 1, 2])
+        damaged = stable_numbers(accounts, {'codex:main': 1, 'codex:account2': 1, 'codex:account3': -1})
+        self.assertEqual(len({damaged[a['id']] for a in accounts}), 4)
+        many = accounts + [{'id': f'codex:n{i}', 'provider': 'codex', 'key': f'n{i}'} for i in range(50)]
+        expanded = stable_numbers(many, mapping)
+        self.assertEqual(expanded['codex:new'], 4)
+        self.assertEqual(len({expanded[a['id']] for a in many}), 54)
+
+    def test_alert_baseline_change_cooldown_restart_and_errors(self):
+        from windows_gui import alert_policy
+        now = datetime(2026, 11, 7, tzinfo=timezone.utc)
+        accounts = [{'id': f'codex:{key}', 'provider': 'codex', 'key': key} for key in ['main', 'account2']]
+        def usage(used, time=now):
+            return {'updatedAt': time.isoformat(), 'secondary': {'usedPercent': used, 'resetsAt': (time + timedelta(hours=4)).isoformat()}}
+        values = {'codex:main': usage(0), 'codex:account2': usage(50)}
+        state, alerts = alert_policy({}, accounts, values, now, True)
+        self.assertEqual(alerts, [])
+        values = {'codex:main': usage(80), 'codex:account2': usage(0)}
+        state, alerts = alert_policy(state, accounts, values, now, True)
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]['account'], 'codex:account2')
+        import json
+        state = json.loads(json.dumps(state))
+        state, alerts = alert_policy(state, accounts, values, now, True)
+        self.assertEqual(alerts, [])
+        saved = copy.deepcopy(state)
+        state, alerts = alert_policy(state, accounts, {}, now + timedelta(minutes=40), True)
+        self.assertEqual(state['winners'], saved['winners'])
+        self.assertEqual(alerts, [])
+        values = {'codex:main': usage(0, now + timedelta(minutes=30)), 'codex:account2': usage(80, now + timedelta(minutes=30))}
+        earlier = {key: dict(value, updatedAt=(now + timedelta(minutes=29)).isoformat()) for key, value in values.items()}
+        self.assertEqual(alert_policy(state, accounts, earlier, now + timedelta(minutes=29), True)[1], [])
+        _, alerts = alert_policy(state, accounts, values, now + timedelta(minutes=30), True)
+        self.assertEqual(len(alerts), 1)
+        _, alerts = alert_policy({}, accounts, values, now + timedelta(minutes=30), False)
+        self.assertEqual(alerts, [])
+
+    def test_near_reset_dedup_stale_exhausted_and_sleep(self):
+        from windows_gui import alert_policy, refresh_due
+        now = datetime(2026, 11, 7, tzinfo=timezone.utc)
+        account = {'id': 'claude:a', 'provider': 'claude', 'key': 'a'}
+        usage = {'updatedAt': now.isoformat(), 'secondary': {'usedPercent': 20, 'resetsAt': (now + timedelta(minutes=45)).isoformat()}}
+        state, alerts = alert_policy({}, [account], {'claude:a': usage}, now, True)
+        self.assertEqual(alerts[0]['kind'], 'reset')
+        state, alerts = alert_policy(state, [account], {'claude:a': usage}, now, True)
+        self.assertEqual(alerts, [])
+        for used in (None, 100):
+            broken = copy.deepcopy(usage)
+            broken['secondary']['usedPercent'] = used
+            self.assertEqual(alert_policy({}, [account], {'claude:a': broken}, now, True)[1], [])
+        self.assertEqual(alert_policy({}, [account], {'claude:a': usage}, now + timedelta(minutes=20), True)[1], [])
+        self.assertFalse(refresh_due(now.timestamp(), now.timestamp() + 299, False))
+        self.assertTrue(refresh_due(now.timestamp(), now.timestamp() + 300, False))
+        self.assertFalse(refresh_due(now.timestamp(), now.timestamp() + 3600, True))
+        self.assertTrue(refresh_due(now.timestamp(), now.timestamp() + 3600, False))
+
+    def test_reset_display_uses_countdown_and_handles_unknown(self):
+        from windows_gui import reset_text
+        now = datetime(2026, 11, 7, tzinfo=timezone.utc)
+        self.assertIn('45 นาที', reset_text((now + timedelta(minutes=45)).isoformat(), now))
+        self.assertIn('ถึงเวลา', reset_text(now.isoformat(), now))
+        self.assertIn('ไม่ทราบ', reset_text(None, now))
+
     def test_recommendation_boundaries(self):
         from windows_gui import recommendation
         now = datetime(2026, 11, 7, tzinfo=timezone.utc)
@@ -18,6 +99,8 @@ class WindowsTests(unittest.TestCase):
             self.assertIsNone(recommendation(broken, now)[0])
         broken = copy.deepcopy(usage)
         broken['updatedAt'] = (now - timedelta(minutes=16)).isoformat()
+        self.assertIsNone(recommendation(broken, now)[0])
+        broken = dict(usage, error='refresh failed')
         self.assertIsNone(recommendation(broken, now)[0])
         usage['primary'] = {'usedPercent': None}
         self.assertIsNone(recommendation(usage, now)[0])
