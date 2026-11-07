@@ -212,6 +212,8 @@ def main():
     smoke = '--self-test' in sys.argv
     if smoke:
         root.withdraw()
+        # CI desktops may be smaller than the viewport under test.
+        root.maxsize(1120, 850)
         assert recommendation({'updatedAt': None})[0] is None
     resources = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
     helper = resources / 'backend/aiaccounts-helper.exe'
@@ -602,7 +604,7 @@ def main():
         for provider, (_, canvas) in zip(('codex', 'claude'), scroll_surfaces):
             rows = panels[provider].winfo_children()
             assert len(rows) == 3
-            assert rows[-1].winfo_y() + rows[-1].winfo_height() <= canvas.winfo_height(), 'Three accounts must fit above the fold at 1120x850'
+            assert rows[-1].winfo_y() + rows[-1].winfo_height() <= canvas.winfo_height(), f'Three accounts must fit: provider={provider}, root={root.winfo_geometry()}, rowsBottom={rows[-1].winfo_y() + rows[-1].winfo_height()}, canvas={canvas.winfo_height()}, scaling={root.tk.call("tk", "scaling")}'
         root.destroy()
         return
     root.after(100, poll)
@@ -618,7 +620,7 @@ if __name__ == '__main__':
             main()
         except Exception:
             import traceback
-            Path(sys.executable).with_name('ai-accounts-selftest-error.log').write_text(traceback.format_exc(), encoding='utf-8')
+            Path(sys.executable if getattr(sys, 'frozen', False) else __file__).with_name('ai-accounts-selftest-error.log').write_text(traceback.format_exc(), encoding='utf-8')
             sys.exit(1)
     else:
         main()
