@@ -54,6 +54,7 @@ class WindowsBackend(Backend):
         super().__init__(root, resources)
         self.local = Path(os.environ.get('LOCALAPPDATA', self.root / 'AppData/Local')) if root is None else self.root / 'AppData/Local'
         self.roaming = Path(os.environ.get('APPDATA', self.root / 'AppData/Roaming')) if root is None else self.root / 'AppData/Roaming'
+        self.claude_store_roaming = self.local / 'Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming'
         self.state = self.local / 'AI Accounts'
 
     def config(self):
@@ -66,8 +67,17 @@ class WindowsBackend(Backend):
             if not isinstance(profile, dict) or not isinstance(profile.get('data_dir'), str):
                 raise SafeError('Invalid Claude profile')
             path = Path(profile['data_dir'])
-            if path.is_symlink() or not path.resolve().is_relative_to(self.roaming.resolve()):
+            if path.is_symlink() or not any(path.resolve().is_relative_to(root.resolve()) for root in (self.roaming, self.claude_store_roaming)):
                 raise SafeError('Claude profile is outside user Application Data')
+            # Store Claude redirects Roaming writes; read and launch the actual profile thereafter.
+            if path.is_relative_to(self.roaming):
+                physical = self.claude_store_roaming / path.relative_to(self.roaming)
+                if physical.is_dir():
+                    if physical.is_symlink() or not physical.resolve().is_relative_to(self.claude_store_roaming.resolve()):
+                        raise SafeError('Claude profile is outside user Application Data')
+                    conf['sync_dirs'] = [str(physical / Path(d).relative_to(path)) if isinstance(d, str) and Path(d).is_relative_to(path) else d for d in conf['sync_dirs']]
+                    path = physical
+                    profile['data_dir'] = str(path)
             roots.append(path.resolve() / 'claude-code-sessions')
         for directory in conf['sync_dirs']:
             if not isinstance(directory, str) or not any(Path(directory).resolve().is_relative_to(p) for p in roots):
@@ -134,7 +144,8 @@ class WindowsBackend(Backend):
         if app is None:
             raise SafeError('Install the official Claude desktop app first')
         key = str(uuid.uuid4())
-        profile = self.roaming / ('Claude AI Accounts ' + key)
+        data_root = self.roaming if app == self.local / 'AnthropicClaude/claude.exe' else self.claude_store_roaming
+        profile = data_root / ('Claude AI Accounts ' + key)
         profile.mkdir(parents=True, mode=0o700)
         subprocess.Popen([str(app), '--user-data-dir=' + str(profile)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         conf = self.config()

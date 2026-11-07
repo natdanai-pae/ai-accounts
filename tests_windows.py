@@ -3,6 +3,23 @@ import unittest
 from datetime import datetime, timezone, timedelta
 
 class WindowsTests(unittest.TestCase):
+    def test_claude_store_profile_maps_only_official_package_cache(self):
+        import tempfile
+        from pathlib import Path
+        from backend import atomic_json, SafeError
+        from windows_backend import WindowsBackend
+        with tempfile.TemporaryDirectory() as home:
+            backend = WindowsBackend(root=home)
+            logical = backend.roaming / 'Claude AI Accounts a'
+            physical = backend.local / 'Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude AI Accounts a'
+            physical.mkdir(parents=True)
+            atomic_json(backend.claude_config, {'profiles': {'a': {'label': 'A', 'data_dir': str(logical)}}, 'sync_dirs': []})
+            self.assertEqual(backend.config()['profiles']['a']['data_dir'], str(physical))
+            for bad in (backend.local / 'Packages/Other/LocalCache/Roaming/a', Path(home) / 'outside'):
+                atomic_json(backend.claude_config, {'profiles': {'a': {'label': 'A', 'data_dir': str(bad)}}, 'sync_dirs': []})
+                with self.assertRaises(SafeError):
+                    backend.config()
+
     def test_add_claude_finds_registered_windows_package(self):
         import tempfile, json
         from pathlib import Path
