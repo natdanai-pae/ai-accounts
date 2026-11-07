@@ -3,14 +3,17 @@ import contextlib
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import plistlib
 import re
+import queue
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 import uuid
@@ -19,6 +22,62 @@ LIMIT = 8 * 1024 * 1024
 
 class SafeError(Exception):
     pass
+
+class ResetSession:
+    """Account-only official app-server RPC; never creates a thread or switches the desktop app."""
+    def __init__(self, executable, profile, timeout=25):
+        self.deadline = time.monotonic() + timeout
+        env = {k: v for k, v in os.environ.items() if not k.startswith(('CODEX_', 'OPENAI_'))}
+        env['CODEX_HOME'] = str(profile)
+        self.process = subprocess.Popen([executable, 'app-server', '--stdio', '-c', 'cli_auth_credentials_store="file"', '-c', 'chatgpt_base_url="https://chatgpt.com/backend-api/"', '-c', 'mcp_servers={}'], cwd=profile, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        self.messages = queue.Queue(maxsize=64)
+        self.counter = 0
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        try:
+            while True:
+                line = self.process.stdout.readline(LIMIT + 1)
+                if not line or len(line) > LIMIT:
+                    self.messages.put_nowait(None)
+                    return
+                self.messages.put_nowait(json.loads(line))
+        except Exception:
+            try:
+                self.messages.put_nowait(None)
+            except queue.Full:
+                pass
+
+    def request(self, method, params):
+        if time.monotonic() >= self.deadline:
+            raise SafeError('Codex account service deadline reached; no further request sent')
+        self.counter += 1
+        self.process.stdin.write((json.dumps({'id': self.counter, 'method': method, 'params': params}) + '\n').encode())
+        self.process.stdin.flush()
+        deadline = self.deadline
+        while time.monotonic() < deadline:
+            try:
+                response = self.messages.get(timeout=max(0.01, deadline - time.monotonic()))
+            except queue.Empty:
+                break
+            if not isinstance(response, dict):
+                break
+            if response.get('id') != self.counter:
+                continue
+            if 'error' in response or not isinstance(response.get('result'), dict):
+                raise SafeError('Codex account service rejected the request; no upstream details displayed')
+            return response['result']
+        raise SafeError('Codex account service timed out or disconnected')
+
+    def close(self):
+        self.process.terminate()
+        try:
+            self.process.wait(3)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
+        self.process.stdin.close()
+        self.process.stdout.close()
 
 def valid_key(key):
     if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', key):
@@ -65,7 +124,7 @@ def _write(path, data):
             os.unlink(tmp)
 
 @contextlib.contextmanager
-def lock(path):
+def lock(path, nonblocking=False):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     with os.fdopen(fd, 'a') as stream:
@@ -74,7 +133,10 @@ def lock(path):
             stream.write('0')
             stream.flush()
             stream.seek(0)
-            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK if nonblocking else msvcrt.LK_LOCK, 1)
+            except OSError:
+                raise SafeError('An operation for this account is already running') from None
             try:
                 yield
             finally:
@@ -82,7 +144,10 @@ def lock(path):
                 msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
         else:
             import fcntl
-            fcntl.flock(stream, fcntl.LOCK_EX)
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
+            except OSError:
+                raise SafeError('An operation for this account is already running') from None
             yield
 
 class Backend:
@@ -110,6 +175,135 @@ class Backend:
             if not isinstance(directory, str) or not any(Path(directory).resolve().is_relative_to(p) for p in allowed):
                 raise SafeError('Claude session directory is outside configured profiles')
         return conf
+
+    @contextlib.contextmanager
+    def reset_session(self, profile, mutation=False):
+        if (profile / 'config.toml').exists():
+            raise SafeError('Reset requires a saved profile without custom app-server configuration')
+        session = ResetSession(self.executable('codex'), profile, timeout=35 if mutation else 25)
+        try:
+            session.request('initialize', {'clientInfo': {'name': 'ai_accounts', 'version': '0.5.0'}, 'capabilities': {'experimentalApi': True}})
+            session.process.stdin.write(b'{"method":"initialized","params":{}}\n')
+            session.process.stdin.flush()
+            yield session
+        finally:
+            session.close()
+
+    def reset_profile(self, provider, key):
+        if provider != 'codex':
+            raise SafeError('Free reset is supported only for Codex')
+        valid_key(key)
+        profile = self.codex_base / 'profiles' / key
+        if profile.is_symlink() or not profile.resolve().is_relative_to((self.codex_base / 'profiles').resolve()):
+            raise SafeError('Invalid saved account path')
+        if not (profile / 'auth.json').is_file() or (profile / 'auth.json').is_symlink():
+            raise SafeError('Saved account login is unavailable')
+        metadata = read_json(profile / 'metadata.json', {})
+        if not isinstance(metadata.get('email'), str) or not isinstance(metadata.get('accountId'), str) or not metadata['accountId']:
+            raise SafeError('Saved account identity is unavailable')
+        return profile, metadata
+
+    def reset_preflight(self, key, metadata, session):
+        account = session.request('account/read', {'refreshToken': False}).get('account') or {}
+        usage = session.request('account/rateLimits/read', {'excludeResetCreditDetails': False, 'supportsLunaReserve': False})
+        attempts = read_json(self.state / 'reset-attempts.json', {})
+        pending = attempts.get(key, {})
+        uncertain = pending.get('state') == 'uncertain'
+        status = {'ok': True, 'supported': True, 'eligible': False, 'availableCount': None, 'expiresAt': None, 'reasonCode': 'identity_unverified', 'reason': 'Identity could not be verified', 'accountId': None, 'accountEmail': None, 'attemptId': pending.get('attemptId') if uncertain else None, 'uncertain': uncertain}
+        usage_id = usage.get('accountId')
+        # CodexSwitch metadata stores HashPublicIdentifier(account_id), never the raw backend ID.
+        usage_identity = 'sha256:' + hashlib.sha256(usage_id.encode()).hexdigest()[:16] if isinstance(usage_id, str) and usage_id else None
+        if account.get('type') != 'chatgpt' or not isinstance(account.get('email'), str) or account['email'].casefold() != metadata['email'].casefold() or usage_identity != metadata['accountId']:
+            return status, None
+        if uncertain and pending.get('accountId') != metadata['accountId']:
+            status['reason'] = 'Unresolved reset belongs to a different saved identity'
+            status['reasonCode'] = 'identity_changed'
+            return status, None
+        status.update(accountId=metadata['accountId'], accountEmail=account['email'])
+        credits = usage.get('rateLimitResetCredits') or {}
+        count = credits.get('availableCount')
+        status['availableCount'] = count if type(count) is int and count >= 0 else None
+        details = credits.get('credits')
+        selected = None
+        now = time.time()
+        if isinstance(details, list):
+            valid = [c for c in details if isinstance(c, dict) and c.get('status') == 'available' and c.get('resetType') == 'codexRateLimits' and isinstance(c.get('id'), str) and c['id'] and (c.get('expiresAt') is None or type(c['expiresAt']) in (int, float) and math.isfinite(c['expiresAt']) and c['expiresAt'] > now)]
+            if valid:
+                selected = min(valid, key=lambda c: c.get('expiresAt') or float('inf'))
+                status['expiresAt'] = selected.get('expiresAt')
+            else:
+                status['reason'] = 'No verified unexpired free reset credit'
+                status['reasonCode'] = 'credit_expired_or_unverified'
+                return status, None
+        if status['availableCount'] is None or status['availableCount'] < 1:
+            status['reason'] = 'No available free reset credit, or credit count unknown'
+            status['reasonCode'] = 'credit_unavailable'
+            return status, None
+        buckets = usage.get('rateLimitsByLimitId')
+        core = buckets.get('codex', {}) if isinstance(buckets, dict) else usage.get('rateLimits', {})
+        if not isinstance(core, dict) or core.get('limitId') not in (None, 'codex'):
+            core = {}
+        eligible = False
+        for name in ('primary', 'secondary'):
+            window = core.get(name) or {}
+            used, reset = window.get('usedPercent'), window.get('resetsAt')
+            if window.get('windowDurationMins') in (300, 10080) and type(used) in (int, float) and math.isfinite(used) and 90 <= used <= 100 and type(reset) in (int, float) and math.isfinite(reset) and reset > now:
+                eligible = True
+        status['eligible'] = eligible
+        status['reasonCode'] = 'eligible' if eligible else 'usage_not_eligible'
+        status['reason'] = 'Fresh core usage has 10% or less remaining; confirmation required' if eligible else 'Core five-hour or weekly remaining must be 10% or less'
+        if uncertain and not eligible:
+            status['reason'] = 'Previous result remains uncertain; current usage is not eligible for a retry'
+            status['reasonCode'] = 'uncertain_ineligible'
+        return status, selected
+
+    def reset_status(self, provider, key):
+        if provider != 'codex':
+            return {'ok': True, 'supported': False, 'eligible': False, 'availableCount': None, 'expiresAt': None, 'reasonCode': 'provider_unsupported', 'reason': 'Free reset is supported only for Codex', 'uncertain': False}
+        profile, metadata = self.reset_profile(provider, key)
+        with lock(self.state / ('reset-' + key + '.lock'), nonblocking=True), self.reset_session(profile) as session:
+            status, _ = self.reset_preflight(key, metadata, session)
+            return status
+
+    def reset_account(self, provider, key, confirmed):
+        if confirmed is not True:
+            raise SafeError('Explicit confirmation is required for each free reset attempt')
+        profile, metadata = self.reset_profile(provider, key)
+        with lock(self.state / ('reset-' + key + '.lock'), nonblocking=True), self.reset_session(profile, mutation=True) as session:
+            status, selected = self.reset_preflight(key, metadata, session)
+            if not status['eligible']:
+                raise SafeError(status['reason'])
+            path = self.state / 'reset-attempts.json'
+            attempts = read_json(path, {})
+            attempt = attempts.get(key, {})
+            if attempt.get('state') != 'uncertain':
+                attempt = {'attemptId': str(uuid.uuid4()), 'accountId': metadata['accountId'], 'creditId': selected['id'] if selected else None}
+            try:
+                uuid.UUID(attempt['attemptId'])
+            except (KeyError, TypeError, ValueError):
+                raise SafeError('Stored reset request ID is invalid; no reset sent') from None
+            # Persist before sending; a crash or timeout must never create a new logical attempt.
+            attempt.update(state='uncertain', updatedAt=time.time())
+            attempts[key] = attempt
+            atomic_json(path, attempts)
+            params = {'idempotencyKey': attempt['attemptId']}
+            if attempt.get('creditId'):
+                params['creditId'] = attempt['creditId']
+            try:
+                result = session.request('account/rateLimitResetCredit/consume', params)
+                outcome = result.get('outcome')
+                if outcome not in ('reset', 'alreadyRedeemed', 'noCredit', 'nothingToReset'):
+                    raise SafeError('Unknown reset outcome')
+            except Exception:
+                return {'ok': False, 'outcome': 'uncertain', 'attemptId': attempt['attemptId'], 'message': 'Reset result is uncertain. No new attempt will be created; any eligible retry uses the same request ID.'}
+            attempt.update(state=outcome, updatedAt=time.time())
+            try:
+                atomic_json(path, attempts)
+            except OSError:
+                # The provider outcome is definitive even if local bookkeeping cannot be updated.
+                return {'ok': outcome in ('reset', 'alreadyRedeemed'), 'outcome': outcome, 'attemptId': attempt['attemptId'], 'message': 'Provider returned ' + outcome + '; local receipt could not be updated. Do not start a new reset attempt.'}
+            # A completed reset stays complete; an optional later quota refresh is a separate operation.
+            return {'ok': outcome in ('reset', 'alreadyRedeemed'), 'outcome': outcome, 'attemptId': attempt['attemptId'], 'message': {'reset': 'One free reset completed', 'alreadyRedeemed': 'This reset attempt was already completed', 'noCredit': 'No free reset credit was consumed: none available', 'nothingToReset': 'No reset applied: no eligible usage window'}[outcome]}
 
     def list_accounts(self):
         identities = read_json(self.state / 'identities.json', {})
@@ -352,7 +546,11 @@ def main(args):
         return backend.list_accounts()
     if len(args) == 2 and args[0] == 'usage':
         return backend.usage(args[1])
+    if len(args) == 3 and args[0] == 'reset-status':
+        return backend.reset_status(args[1], args[2])
     with lock(backend.state / 'operation.lock'):
+        if len(args) == 4 and args[0] == 'reset' and args[3] == '--confirmed':
+            return backend.reset_account(args[1], args[2], True)
         if len(args) == 3 and args[0] in ('add', 'switch'):
             message = getattr(backend, args[0])(*args[1:])
         elif args == ['connect']:

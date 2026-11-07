@@ -6,6 +6,7 @@ AI Accounts is an independent, local account manager. It is not an official Open
 - Each person signs in to their own accounts on their own computer. Credentials stay in that computer's provider/switcher configuration. Usage requests go to the corresponding provider; the application has no central account server or telemetry endpoint.
 - Connecting Claude usage can request OS credential-store access to read the selected local Claude profile's session cookie. The cookie is stored privately for subsequent quota reads. Never post the configuration, cookies or authentication files in an issue.
 - Account switching can close the running provider application. Save work first. Switching does not merge subscription balances or redeem reset credits.
+- Free reset is a separate, explicitly confirmed action. The helper rechecks saved identity, fresh core usage and existing credits through the official Codex account API. It records an idempotency key before sending and reuses that key after uncertain outcomes. No reset or credit purchase runs automatically.
 - Sharing local history within a provider is intentional. Accounts configured under the same OS user are not isolated workspaces for confidential conversations.
 - Cross-provider context is an explicit local Markdown handoff. It is not a merged native Claude/Codex session. The user decides what to copy into either service.
 - Account recommendations are a percentage-per-hour heuristic, not a prediction of tokens, money, quality or task completion. Unknown, stale and exhausted readings are not eligible.

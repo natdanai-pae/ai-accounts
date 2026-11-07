@@ -29,13 +29,13 @@ def recommendation(usage, now=None):
     if not updated or not 0 <= (now - updated).total_seconds() <= 900:
         return None, 'Refresh quota: missing or stale timestamp'
     scores = []
-    for name in ('secondary', 'primary') if 'primary' in usage else ('secondary',):
+    for name in ('secondary', 'primary') if usage.get('primary') is not None else ('secondary',):
         window = usage.get(name) or {}
         used, reset = window.get('usedPercent'), date(window.get('resetsAt'))
         if not number(used) or not 0 <= used < 100 or not reset or reset <= now:
             return None, 'Unknown, exhausted or expired quota'
         scores.append((100 - used) / max((reset - now).total_seconds() / 3600, 1 / 60))
-    return min(scores), 'Remaining % per hour until reset; limited by primary window'
+    return scores[0], 'Weekly remaining quota before reset; prefer ready accounts first'
 
 def parse_accounts(data):
     rows = data.get('accounts')
@@ -86,7 +86,28 @@ def ordered_accounts(accounts, mapping):
 def provider_winner(accounts, values, provider, now=None):
     eligible = [(a, recommendation(values[a['id']], now)[0]) for a in accounts if a['provider'] == provider and values.get(a['id'])]
     eligible = [(a, score) for a, score in eligible if score is not None]
-    return sorted(eligible, key=lambda item: (-item[1], item[0]['id']))[0][0] if eligible else None
+    ready = [(a, score) for a, score in eligible if ready_quota(values[a['id']])]
+    return sorted(ready or eligible, key=lambda item: (-item[1], item[0]['id']))[0][0] if eligible else None
+
+def ready_quota(usage):
+    return 100 - usage['secondary']['usedPercent'] >= 10 and (usage.get('primary') is None or 100 - usage['primary']['usedPercent'] >= 20)
+
+def quota_lanes(usage):
+    return [('primary', 'รอบหลัก'), ('secondary', 'รายสัปดาห์')] if (usage or {}).get('primary') is not None else [('secondary', 'รายสัปดาห์')]
+
+def recommendation_reason(accounts, values, winner, numbers, now=None):
+    usage = values[winner['id']]
+    suffix = ' • ประเมินจากรายสัปดาห์เท่านั้น' if usage.get('primary') is None else ''
+    others = [a for a in accounts if a['provider'] == winner['provider'] and a['id'] != winner['id'] and values.get(a['id']) and recommendation(values[a['id']], now)[0] is not None]
+    limited = next((a for a in others if not ready_quota(values[a['id']])), None)
+    if ready_quota(usage) and limited:
+        return f'มีโควตาพร้อมใช้กว่า บัญชี {numbers[limited["id"]]} ที่ใกล้หมด' + suffix
+    if not ready_quota(usage):
+        return 'ทุกบัญชีเหลือน้อย: บัญชีนี้ควรใช้ก่อนรอบสัปดาห์รีเซ็ต' + suffix
+    if others:
+        other = sorted(others, key=lambda a: numbers[a['id']])[0]
+        return f'ควรใช้โควตาก่อนรีเซ็ตมากกว่าบัญชี {numbers[other["id"]]} ซึ่งเก็บไว้ใช้ต่อได้' + suffix
+    return 'บัญชีนี้มีโควตาพร้อมใช้ และข้อมูลล่าสุดตรวจสอบได้' + suffix
 
 def alert_policy(saved, accounts, values, now, enabled):
     stamp = now.timestamp()
@@ -106,7 +127,7 @@ def alert_policy(saved, accounts, values, now, enabled):
             usage = values.get(account['id'])
             if account['provider'] != provider or not usage or recommendation(usage, now)[0] is None:
                 continue
-            names = ('secondary', 'primary') if 'primary' in usage else ('secondary',)
+            names = ('secondary', 'primary') if usage.get('primary') is not None else ('secondary',)
             limiting = min(names, key=lambda name: (100 - usage[name]['usedPercent']) / max((date(usage[name]['resetsAt']) - now).total_seconds(), 60))
             reset = date(usage[limiting]['resetsAt'])
             if 0 < (reset - now).total_seconds() <= 3600:
@@ -123,6 +144,34 @@ def alert_policy(saved, accounts, values, now, enabled):
 
 def refresh_due(last, now, busy):
     return not busy and (now < last or now - last >= 300)
+
+def reset_command(account, status, confirmed, busy):
+    count = status.get('availableCount')
+    if busy or not confirmed or account.get('provider') != 'codex' or status.get('ok') is not True or status.get('supported') is not True or status.get('eligible') is not True or not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+        return None
+    if status.get('uncertain'):
+        attempt = status.get('attemptId')
+        if not isinstance(attempt, str) or not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', attempt) or not isinstance(status.get('accountEmail'), str) or not status['accountEmail']:
+            return None
+    if account.get('email') and status.get('accountEmail') != account['email']:
+        return None
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', account.get('key', '')):
+        return None
+    return ['reset', 'codex', account['key'], '--confirmed']
+
+def reset_reason(status):
+    if status.get('uncertain'):
+        return 'คำขอเดิมยังไม่ทราบผล · ยังตรวจซ้ำไม่ได้'
+    reason = str(status.get('reason') or '').lower()
+    if '10%' in reason:
+        return 'ใช้ได้เมื่อโควตารอบใดรอบหนึ่งเหลือไม่เกิน 10%'
+    if 'no available' in reason or 'no verified unexpired' in reason:
+        return 'ยังไม่มีสิทธิ์รีเซ็ตพร้อมใช้'
+    if 'identity' in reason:
+        return 'ตรวจสอบบัญชีไม่สำเร็จ'
+    if not reason:
+        return 'รอข้อมูลสิทธิ์รีเซ็ตล่าสุด'
+    return 'ตรวจสิทธิ์ไม่ได้ · ดูรายละเอียด'
 
 def reset_text(value, now=None):
     reset = date(value)
@@ -149,7 +198,7 @@ def main():
     style = ttk.Style(root)
     style.theme_use('clam')
     style.configure('.', font=('Leelawadee UI', 10), background=colors['base'], foreground=colors['ink'])
-    style.configure('TButton', padding=(12, 7), background='#FFFFFF')
+    style.configure('TButton', padding=(9, 4), background='#FFFFFF')
     style.map('TButton', background=[('active', '#DDE8EF')])
     style.configure('Accent.TButton', foreground='white', background=colors['teal'])
     style.map('Accent.TButton', background=[('active', '#075A53')])
@@ -159,7 +208,7 @@ def main():
     style.configure('CardMuted.TLabel', background=colors['card'], foreground=colors['muted'])
     style.configure('Ribbon.TFrame', background=colors['tint'])
     style.configure('Ribbon.TLabel', background=colors['tint'], foreground=colors['teal'])
-    style.configure('Quota.Horizontal.TProgressbar', background=colors['teal'], troughcolor='#E2EBEF', borderwidth=0, thickness=8)
+    style.configure('Quota.Horizontal.TProgressbar', background=colors['teal'], troughcolor='#E2EBEF', borderwidth=0, thickness=5)
     smoke = '--self-test' in sys.argv
     if smoke:
         root.withdraw()
@@ -171,7 +220,7 @@ def main():
         root._icon = tk.PhotoImage(file=str(icon))
         root.iconphoto(True, root._icon)
     events = queue.Queue()
-    state = {'busy': False, 'accounts': [], 'usage': {}, 'lastRefresh': 0, 'lastPaint': 0}
+    state = {'busy': False, 'accounts': [], 'usage': {}, 'resetStatuses': {}, 'lastRefresh': 0, 'lastPaint': 0}
     private_dir = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / 'AppData/Local'))) / 'AI Accounts'
     preferences_path = private_dir / 'ui-preferences.json'
     preferences = {'numbers': {}, 'alerts': {}, 'notifications': False}
@@ -188,15 +237,15 @@ def main():
     except Exception:
         pass
     notifications = tk.BooleanVar(value=preferences['notifications'])
-    toolbar = ttk.Frame(root, padding=(20, 14, 20, 8))
+    toolbar = ttk.Frame(root, padding=(16, 8, 16, 4))
     toolbar.pack(fill='x')
-    ttk.Label(toolbar, text='AI Accounts', font=('Leelawadee UI', 21, 'bold')).pack(side='left')
+    ttk.Label(toolbar, text='AI Accounts', font=('Leelawadee UI', 18, 'bold')).pack(side='left')
     ttk.Label(toolbar, text='เลือกบัญชีให้เหมาะกับโควตาที่เหลือ', style='Muted.TLabel').pack(side='left', padx=18)
     status = tk.StringVar(value='กำลังอ่านบัญชี…')
     actions = ttk.Frame(root, padding=(20, 0, 20, 8))
     actions.pack(fill='x')
     notice = tk.StringVar(value='แจ้งในแอปและเสียง: ' + ('เปิด' if notifications.get() else 'ปิด') + ' • ไม่มี Windows toast • รีเฟรชทุก 5 นาทีขณะเปิดแอป')
-    ttk.Label(root, textvariable=notice, foreground=colors['teal'], wraplength=1050, padding=(20, 6, 20, 8)).pack(fill='x')
+    ttk.Label(root, textvariable=notice, foreground=colors['teal'], wraplength=1050, padding=(20, 2, 20, 4)).pack(fill='x')
     columns = ttk.Frame(root, padding=(14, 0, 14, 0))
     columns.pack(fill='both', expand=True)
     panels, ribbons, scroll_surfaces = {}, {}, []
@@ -207,11 +256,11 @@ def main():
         pane = ttk.Frame(columns, padding=6)
         pane.grid(row=0, column=column, sticky='nsew')
         heading = ttk.Frame(pane)
-        heading.pack(fill='x', pady=(2, 8))
-        ttk.Label(heading, text=provider.title(), font=('Leelawadee UI', 17, 'bold')).pack(side='left')
+        heading.pack(fill='x', pady=(0, 4))
+        ttk.Label(heading, text=provider.title(), font=('Leelawadee UI', 16, 'bold')).pack(side='left')
         ttk.Button(heading, text='+ เพิ่มบัญชี', command=lambda p=provider: add(p)).pack(side='right')
-        ribbon = ttk.Frame(pane, style='Ribbon.TFrame', padding=14)
-        ribbon.pack(fill='x', pady=(0, 10))
+        ribbon = ttk.Frame(pane, style='Ribbon.TFrame', padding=(10, 7))
+        ribbon.pack(fill='x', pady=(0, 6))
         ribbons[provider] = ribbon
         canvas = tk.Canvas(pane, highlightthickness=0, width=450, background=colors['base'])
         scroll = ttk.Scrollbar(pane, orient='vertical', command=canvas.yview)
@@ -263,6 +312,14 @@ def main():
                         usage[provider] = value if isinstance(value, list) else []
                     except Exception:
                         usage[provider] = []
+                from concurrent.futures import ThreadPoolExecutor
+                def reset_status(account):
+                    try:
+                        return account['id'], invoke(['reset-status', 'codex', account['key']])
+                    except Exception:
+                        return account['id'], {'supported': False, 'reason': 'อ่านสิทธิ์รีเซ็ตไม่สำเร็จ'}
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    usage['_resetStatuses'] = dict(pool.map(reset_status, [a for a in accounts if a['provider'] == 'codex']))
                 events.put((accounts, usage, result.get('message', 'Updated') if isinstance(result, dict) else 'Updated'))
             except RuntimeError as error:
                 events.put((None, None, str(error)))
@@ -283,6 +340,19 @@ def main():
         if label:
             work(['add', provider, label])
 
+    def request_reset(account):
+        if state['busy']:
+            return
+        state['busy'] = True
+        status.set('กำลังตรวจสิทธิ์รีเซ็ตล่าสุด • ยังไม่ใช้สิทธิ์')
+        def check():
+            try:
+                data = invoke(['reset-status', account['provider'], account['key']])
+            except Exception:
+                data = {'supported': False, 'reason': 'อ่านสิทธิ์รีเซ็ตไม่สำเร็จ กรุณารีเฟรช'}
+            events.put(('reset-status', account, data))
+        threading.Thread(target=check, daemon=True).start()
+
     def save_preferences():
         from backend import atomic_json
         try:
@@ -300,6 +370,9 @@ def main():
 
     def details(account, usage):
         lines = [account_title(account), str(account.get('label') or ''), account.get('email') or 'ยังไม่เชื่อมข้อมูลตัวตน']
+        reset_status = state['resetStatuses'].get(account['id'], {})
+        if reset_status.get('reason'):
+            lines.append('สถานะสิทธิ์รีเซ็ต: ' + str(reset_status['reason']))
         if usage:
             for key, label in (('secondary', 'รายสัปดาห์'), ('primary', 'รอบหลัก')):
                 if key in usage:
@@ -313,7 +386,7 @@ def main():
             lines.extend(['เครดิต: ' + (str(balance) + ' ' + str(cost.get('currencyCode', '')) if number(balance) else 'ไม่ทราบ'), 'สิทธิ์รีเซ็ต: ' + (str(available) if number(available) else 'ไม่ทราบ'), 'อัปเดต: ' + str(usage.get('updatedAt') or 'ไม่ทราบ')])
         else:
             lines.append('ไม่มีข้อมูลโควตา • เชื่อมโควตาแล้วรีเฟรชอีกครั้ง')
-        lines.append('คำแนะนำเทียบเฉพาะผู้ให้บริการเดียวกัน ใช้ % ที่เหลือต่อชั่วโมงจนรีเซ็ต โดยจำกัดด้วยรอบหลัก ไม่ใช่จำนวนโทเคน และไม่สลับบัญชีอัตโนมัติ')
+        lines.append('เลือกบัญชีที่รอบหลักเหลืออย่างน้อย 20% และรายสัปดาห์อย่างน้อย 10% ก่อนเมื่อมีตัวเลือก จากนั้นเลือกโควตารายสัปดาห์ที่ควรใช้ก่อนรีเซ็ต ไม่เปรียบเทียบข้ามผู้ให้บริการ ไม่ใช่จำนวนโทเคน และไม่สลับบัญชีอัตโนมัติ')
         messagebox.showinfo('รายละเอียดบัญชี', '\n\n'.join(lines), parent=root)
 
     def render():
@@ -330,49 +403,93 @@ def main():
             if winner:
                 usage = values[winner['id']]
                 week = usage['secondary']
-                ttk.Label(ribbon, text='แนะนำตอนนี้: บัญชี ' + str(preferences['numbers'][winner['id']]), style='Ribbon.TLabel', font=('Leelawadee UI', 14, 'bold')).pack(anchor='w')
-                ttk.Label(ribbon, text=f'รายสัปดาห์เหลือ {100-week["usedPercent"]:g}%\n' + reset_text(week['resetsAt']), style='Ribbon.TLabel', wraplength=380).pack(anchor='w', pady=5)
-                ttk.Label(ribbon, text='เหลือต่อชั่วโมงก่อนรีเซ็ตสูงสุด โดยคำนึงถึงรอบหลัก', style='Ribbon.TLabel', wraplength=380).pack(anchor='w')
-                ttk.Button(ribbon, text='ใช้บัญชีนี้', style='Accent.TButton', command=lambda a=winner: switch(a)).pack(anchor='w', pady=(9, 0))
+                heading = ttk.Frame(ribbon, style='Ribbon.TFrame')
+                heading.pack(fill='x')
+                ttk.Label(heading, text='แนะนำบัญชี ' + str(preferences['numbers'][winner['id']]) + f' • สัปดาห์เหลือ {100-week["usedPercent"]:g}%', style='Ribbon.TLabel', font=('Leelawadee UI', 11, 'bold')).pack(side='left')
+                ttk.Button(heading, text='ใช้บัญชีนี้', style='Accent.TButton', command=lambda a=winner: switch(a)).pack(side='right')
+                ttk.Label(ribbon, text=recommendation_reason(accounts, values, winner, preferences['numbers']), style='Ribbon.TLabel', wraplength=455).pack(anchor='w', pady=(3, 0))
             else:
-                ttk.Label(ribbon, text='ยังไม่มีบัญชีที่แนะนำ', style='Ribbon.TLabel', font=('Leelawadee UI', 14, 'bold')).pack(anchor='w')
-                ttk.Label(ribbon, text='ต้องมีโควตาคงเหลือและเวลารีเซ็ตที่ตรวจสอบได้\nข้อมูลต้องอัปเดตภายใน 15 นาที', style='Ribbon.TLabel', wraplength=380).pack(anchor='w', pady=6)
+                ttk.Label(ribbon, text='ยังไม่มีบัญชีที่แนะนำ', style='Ribbon.TLabel', font=('Leelawadee UI', 11, 'bold')).pack(anchor='w')
+                ttk.Label(ribbon, text='รีเฟรชโควตาและเวลารีเซ็ต • ข้อมูลต้องไม่เกิน 15 นาที', style='Ribbon.TLabel', wraplength=455).pack(anchor='w', pady=3)
             if not accounts:
                 ttk.Label(panel, text='เพิ่มบัญชีและเข้าสู่ระบบ\nจากนั้นเชื่อมโควตาและตั้งค่าแชร์เซสชัน', wraplength=380, style='Muted.TLabel').pack(pady=24)
             for account in accounts:
                 usage = values.get(account['id'])
-                row = ttk.Frame(panel, padding=14, style='Card.TFrame')
-                row.pack(fill='x', pady=(0, 10))
+                row = ttk.Frame(panel, padding=(10, 7), style='Card.TFrame')
+                row.pack(fill='x', pady=(0, 6))
                 top = ttk.Frame(row, style='Card.TFrame')
                 top.pack(fill='x')
-                ttk.Label(top, text='บัญชี ' + str(preferences['numbers'][account['id']]), style='Card.TLabel', font=('Leelawadee UI', 13, 'bold')).pack(side='left')
-                if winner and winner['id'] == account['id']:
-                    ttk.Label(top, text='แนะนำ', style='Card.TLabel', foreground=colors['teal']).pack(side='right')
-                ttk.Label(row, text=account.get('label') or account['key'], style='CardMuted.TLabel', wraplength=380).pack(anchor='w', pady=(2, 8))
-                detail = 'ไม่มีข้อมูลโควตา • เชื่อมโควตาหรือรีเฟรช'
-                if usage:
-                    week = usage.get('secondary') or {}
-                    used = week.get('usedPercent')
-                    fresh = date(usage.get('updatedAt'))
-                    fresh = fresh is not None and 0 <= (datetime.now(timezone.utc) - fresh).total_seconds() <= 900
-                    if number(used) and 0 <= used <= 100:
-                        ttk.Label(row, text=f'รายสัปดาห์เหลือ {100-used:g}%' + ('' if fresh else ' • ข้อมูลเก่า'), style='Card.TLabel').pack(anchor='w')
-                        ttk.Progressbar(row, style='Quota.Horizontal.TProgressbar', maximum=100, value=100-used).pack(fill='x', pady=7)
-                    detail = reset_text(week.get('resetsAt'))
-                    if recommendation(usage)[0] is None:
-                        detail += '\nยังไม่ใช้แนะนำ: โควตาหมด ข้อมูลเก่า หรือข้อมูลไม่ครบ'
-                ttk.Label(row, text=detail, wraplength=380, style='CardMuted.TLabel').pack(anchor='w', pady=(0, 9))
-                buttons = ttk.Frame(row, style='Card.TFrame')
-                buttons.pack(fill='x')
-                ttk.Button(buttons, text='สลับบัญชี', command=lambda a=account: switch(a)).pack(side='left')
-                ttk.Button(buttons, text='รายละเอียด', command=lambda a=account, u=usage: details(a, u)).pack(side='right')
+                label = str(account.get('label') or account['key'])
+                label = label[:20] + '…' if len(label) > 21 else label
+                title = 'บัญชี ' + str(preferences['numbers'][account['id']]) + '  ' + label
+                ttk.Label(top, text=title, style='Card.TLabel', font=('Leelawadee UI', 11, 'bold')).pack(side='left')
+                ttk.Button(top, text='สลับ', command=lambda a=account: switch(a)).pack(side='right')
+                ttk.Button(top, text='รายละเอียด', command=lambda a=account, u=usage: details(a, u)).pack(side='right', padx=4)
+                lanes = ttk.Frame(row, style='Card.TFrame')
+                lanes.pack(fill='x', pady=(4, 2))
+                lane_items = quota_lanes(usage)
+                for index, (key, label) in enumerate(lane_items):
+                    lanes.columnconfigure(index, weight=1, uniform='quotas')
+                    cell = ttk.Frame(lanes, style='Card.TFrame')
+                    cell.grid(row=0, column=index, sticky='nsew', padx=0 if len(lane_items) == 1 else (0, 8) if index == 0 else (8, 0))
+                    window = (usage or {}).get(key) or {}
+                    used = window.get('usedPercent')
+                    valid = number(used) and 0 <= used <= 100
+                    text = f'{label} เหลือ {100-used:g}%' if valid else label + (' ไม่มีรอบนี้' if usage and key == 'primary' and key not in usage else ' ไม่ทราบ')
+                    ttk.Label(cell, text=text, style='Card.TLabel').pack(anchor='w')
+                    ttk.Progressbar(cell, style='Quota.Horizontal.TProgressbar', maximum=100, value=100-used if valid else 0).pack(fill='x', pady=3)
+                    ttk.Label(cell, text=reset_text(window.get('resetsAt')) if window else '—', style='CardMuted.TLabel', font=('Leelawadee UI', 9), wraplength=455 if len(lane_items) == 1 else 215).pack(anchor='w')
+                if len(lane_items) == 1:
+                    ttk.Label(row, text='รอบสั้นไม่มีข้อมูล', style='CardMuted.TLabel', font=('Leelawadee UI', 9)).pack(anchor='w')
+                if not usage or recommendation(usage)[0] is None:
+                    ttk.Label(row, text='ไม่ใช้แนะนำ: โควตาหมด ข้อมูลเก่า หรือข้อมูลไม่ครบ', style='CardMuted.TLabel', font=('Leelawadee UI', 9)).pack(anchor='w')
+                source = next((r for r in state['usage'].get(provider, []) if isinstance(r, dict) and r.get('usage') is usage), {}) if usage else {}
+                reset_info = state['resetStatuses'].get(account['id'], {})
+                count = reset_info.get('availableCount', (source.get('resetCredits') or {}).get('available'))
+                reset_line = ttk.Frame(row, style='Card.TFrame')
+                reset_line.pack(fill='x', pady=(4, 0))
+                stamp = reset_info.get('expiresAt')
+                try:
+                    expiry = datetime.fromtimestamp(stamp, timezone.utc) if number(stamp) else None
+                except (ValueError, OverflowError, OSError):
+                    expiry = None
+                expiry_text = expiry.astimezone().strftime('%d/%m %H:%M') if expiry else 'ไม่ทราบ'
+                ttk.Label(reset_line, text='สิทธิ์รีเซ็ต ' + (str(count) if number(count) else 'ไม่ทราบ') + ' • หมดอายุ ' + expiry_text, style='CardMuted.TLabel', font=('Leelawadee UI', 9)).pack(side='left')
+                enabled = reset_command(account, reset_info, True, False) is not None
+                ttk.Button(reset_line, text='ตรวจคำขอเดิม' if reset_info.get('uncertain') else 'รีเซ็ตฟรี', command=lambda a=account: request_reset(a), state='normal' if enabled else 'disabled').pack(side='right')
+                if not enabled:
+                    reason = 'Claude ยังไม่รองรับรีเซ็ตจากแอปนี้' if provider == 'claude' else reset_reason(reset_info)
+                    ttk.Label(row, text=reason, style='CardMuted.TLabel', font=('Leelawadee UI', 9), wraplength=455).pack(anchor='w')
 
     def poll():
         try:
             accounts, usage, message = events.get_nowait()
+            if accounts == 'reset-status':
+                account, reset_status = usage, message
+                state['resetStatuses'][account['id']] = reset_status
+                command = reset_command(account, reset_status, True, False)
+                confirmed = False
+                if command:
+                    if reset_status.get('uncertain'):
+                        title = 'ยืนยันตรวจคำขอเดิม'
+                        explanation = '\n\nคำขอก่อนหน้ายังไม่ทราบผล จะใช้รหัสเดิมนี้เท่านั้น:\n' + reset_status['attemptId'] + '\nไม่สร้างคำขอใช้สิทธิ์ใหม่ ระบบอาจทำคำขอเดิมให้เสร็จ\nสิทธิ์ฟรี 1 ครั้งยังผูกกับคำขอเดิม\n\nต้องการตรวจคำขอเดิมหรือไม่?'
+                    else:
+                        title = 'ยืนยันใช้สิทธิ์รีเซ็ตฟรี'
+                        explanation = '\n\nการดำเนินการนี้ใช้สิทธิ์ฟรี 1 ครั้งเพื่อรีเซ็ตโควตา\nไม่ซื้อเครดิต ไม่เปลี่ยนแพ็กเกจ และไม่สลับบัญชี\n\nต้องการใช้สิทธิ์ตอนนี้หรือไม่?'
+                    confirmed = messagebox.askokcancel(title, account_title(account) + '\n' + str(reset_status.get('accountEmail') or 'ตรวจสอบบัญชีแล้ว') + explanation, parent=root)
+                else:
+                    messagebox.showinfo('ยังรีเซ็ตไม่ได้', reset_reason(reset_status), parent=root)
+                state['busy'] = False
+                render()
+                if confirmed:
+                    work(command)
+                else:
+                    status.set('ไม่ได้ส่งคำขอเพิ่มเติม')
+                root.after(100, poll)
+                return
             state['busy'] = False
             if accounts is not None:
-                state.update(accounts=accounts, usage=usage)
+                state.update(accounts=accounts, usage=usage, resetStatuses=usage.pop('_resetStatuses', {}))
                 preferences['numbers'] = stable_numbers(accounts, preferences['numbers'])
                 preferences['alerts'], alerts = alert_policy(preferences['alerts'], accounts, values_by_account(), datetime.now(timezone.utc), notifications.get())
                 render()
@@ -472,11 +589,20 @@ def main():
         from datetime import timedelta
         now = datetime.now(timezone.utc)
         state['accounts'] = [{'id': f'{p}:fixture{i}', 'provider': p, 'key': f'fixture{i}', 'label': f'บัญชีทดสอบ {i}', 'usageAccount': f'fixture{i}', 'email': None} for p in ('codex', 'claude') for i in range(25)]
-        state['usage'] = {p: [{'provider': p, 'account': f'fixture{i}', 'usage': {'updatedAt': now.isoformat(), 'secondary': {'usedPercent': i, 'resetsAt': (now + timedelta(hours=2)).isoformat()}}} for i in range(25)] for p in ('codex', 'claude')}
+        state['usage'] = {p: [{'provider': p, 'account': f'fixture{i}', 'usage': {'updatedAt': now.isoformat(), 'primary': {'usedPercent': 20, 'resetsAt': (now + timedelta(hours=1)).isoformat()}, 'secondary': {'usedPercent': i, 'resetsAt': (now + timedelta(hours=2)).isoformat()}}} for i in range(25)] for p in ('codex', 'claude')}
         preferences['numbers'] = stable_numbers(state['accounts'], {})
         render()
         root.update_idletasks()
         assert len(panels['codex'].winfo_children()) == 25
+        state['accounts'] = [a for a in state['accounts'] if a['key'] in ('fixture0', 'fixture1', 'fixture2')]
+        state['resetStatuses'] = {a['id']: {'ok': True, 'supported': True, 'eligible': True, 'availableCount': 2, 'expiresAt': (now + timedelta(days=3)).timestamp()} for a in state['accounts'] if a['provider'] == 'codex'}
+        render()
+        root.deiconify()
+        root.update_idletasks()
+        for provider, (_, canvas) in zip(('codex', 'claude'), scroll_surfaces):
+            rows = panels[provider].winfo_children()
+            assert len(rows) == 3
+            assert rows[-1].winfo_y() + rows[-1].winfo_height() <= canvas.winfo_height(), 'Three accounts must fit above the fold at 1120x850'
         root.destroy()
         return
     root.after(100, poll)

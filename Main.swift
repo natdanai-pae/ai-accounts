@@ -26,6 +26,33 @@ struct AlertSnapshot {
     let remaining: Double
     let reset: Date
 }
+struct ResetAvailability: Decodable {
+    let ok: Bool
+    let supported: Bool?
+    let eligible: Bool?
+    let availableCount: Int?
+    let expiresAt: Double?
+    let reason: String?
+    let accountId: String?
+    let accountEmail: String?
+    let uncertain: Bool?
+}
+func canReset(_ value: ResetAvailability, fetched: Date, now: Date) -> Bool {
+    value.ok && value.supported == true && value.eligible == true && value.accountId?.isEmpty == false && (value.availableCount ?? 0) > 0 && now.timeIntervalSince(fetched) >= -60 && now.timeIntervalSince(fetched) <= 900
+}
+func resetReasonThai(_ reason: String?) -> String {
+    switch reason {
+    case "Core five-hour or weekly remaining must be 10% or less": return "ใช้ได้เมื่อรอบใดรอบหนึ่งเหลือไม่เกิน 10%"
+    case "Fresh core usage has 10% or less remaining; confirmation required": return "พร้อมใช้ 1 สิทธิ์ · ต้องยืนยันก่อนรีเซ็ต"
+    case "No verified unexpired free reset credit": return "ยังไม่มีสิทธิ์รีเซ็ตที่ยืนยันว่าใช้ได้"
+    case "No available free reset credit, or credit count unknown": return "ไม่มีสิทธิ์รีเซ็ต หรือยังตรวจจำนวนไม่ได้"
+    case "Identity could not be verified": return "ยังยืนยันบัญชีไม่ได้ · ลองรีเฟรช"
+    case "Unresolved reset belongs to a different saved identity": return "คำขอเดิมเป็นคนละบัญชี · ยังรีเซ็ตไม่ได้"
+    case "Previous result remains uncertain; current usage is not eligible for a retry": return "ผลคำขอเดิมยังไม่ชัดเจน · ยังลองซ้ำไม่ได้"
+    case "Free reset is supported only for Codex": return "รองรับรีเซ็ตฟรีเฉพาะ Codex"
+    default: return "ตรวจสิทธิ์ไม่ได้ · ลองรีเฟรช"
+    }
+}
 struct AlertHistory: Codable {
     var winner: String? = nil
     var lastSent: Date? = nil
@@ -56,6 +83,15 @@ func notificationHint(enabled: Bool, nativeAllowed: Bool) -> String {
 }
 func refreshDue(last: Date?, now: Date, busy: Bool) -> Bool { !busy && (last.map { now.timeIntervalSince($0) >= 300 } ?? true) }
 func uiV4Tests() {
+    assert(resetReasonThai("Core five-hour or weekly remaining must be 10% or less") == "ใช้ได้เมื่อรอบใดรอบหนึ่งเหลือไม่เกิน 10%")
+    assert(resetReasonThai("Identity could not be verified") == "ยังยืนยันบัญชีไม่ได้ · ลองรีเฟรช")
+    assert(resetReasonThai("unknown provider failure") == "ตรวจสิทธิ์ไม่ได้ · ลองรีเฟรช")
+    assert(resetReasonThai(nil) == "ตรวจสิทธิ์ไม่ได้ · ลองรีเฟรช")
+    let resetFixture = ResetAvailability(ok: true, supported: true, eligible: true, availableCount: 1, expiresAt: nil, reason: nil, accountId: "account", accountEmail: "test@example.invalid", uncertain: false)
+    assert(canReset(resetFixture, fetched: Date(), now: Date()), "verified reset status enables explicit action")
+    assert(!canReset(resetFixture, fetched: Date(timeIntervalSince1970: 0), now: Date()))
+    let noCredit = ResetAvailability(ok: true, supported: true, eligible: false, availableCount: 0, expiresAt: nil, reason: nil, accountId: "account", accountEmail: nil, uncertain: true)
+    assert(!canReset(noCredit, fetched: Date(), now: Date()), "uncertain result never bypasses provider eligibility")
     let accounts = ["account3", "main", "account2", "extra"].map { Account(id: "codex:\($0)", provider: "codex", key: $0, label: "rename", email: nil, usageAccount: nil) }
     let numbers = accountNumbers(accounts, saved: [:])
     assert(numbers["codex:main"] == 1, "legacy main must display account 1")
@@ -135,6 +171,7 @@ struct Recommendation {
     let score: Double?
     let hours: Double?
     let reason: String
+    var usable = true
 }
 func recommend(weekly: WindowQuota?, primary: WindowQuota?, updated: Date?, now: Date) -> Recommendation {
     let freshnessLimit: TimeInterval = 15*60
@@ -147,15 +184,15 @@ func recommend(weekly: WindowQuota?, primary: WindowQuota?, updated: Date?, now:
         return ((100-used)/max(hours, 1.0/60), hours)
     }
     guard let week = score(weekly) else { return Recommendation(score: nil, hours: nil, reason: "ไม่นำมาจัดอันดับ: โควตาสัปดาห์หมด ขาดข้อมูล หรือเลยเวลารีเซ็ต") }
-    var result = week.0
+    let result = week.0
     if let primary {
-        guard let short = score(primary) else { return Recommendation(score: nil, hours: week.1, reason: "ไม่นำมาจัดอันดับ: รอบหลักหมด ขาดข้อมูล หรือเลยเวลารีเซ็ต") }
-        result = min(result, short.0)
+        guard score(primary) != nil else { return Recommendation(score: nil, hours: week.1, reason: "ไม่นำมาจัดอันดับ: รอบหลักหมด ขาดข้อมูล หรือเลยเวลารีเซ็ต") }
     }
-    return Recommendation(score: result, hours: week.1, reason: String(format: "%.2f %%/ชม. · รีเซ็ตสัปดาห์ใน %.1f ชม.", result, week.1))
+    return Recommendation(score: result, hours: week.1, reason: String(format: "%.2f %%/ชม. · รีเซ็ตสัปดาห์ใน %.1f ชม.", result, week.1), usable: (100 - weekly!.used!) >= 10 && (primary.map { 100 - $0.used! >= 20 } ?? true))
 }
 func recommendationWinner(_ accounts: [Account], values: [String: Recommendation], provider: String) -> String? {
     accounts.filter { $0.provider == provider && values[$0.id]?.score != nil }.sorted {
+        if values[$0.id]!.usable != values[$1.id]!.usable { return values[$0.id]!.usable }
         let a = values[$0.id]!.score!, b = values[$1.id]!.score!
         return a == b ? $0.id < $1.id : a > b
     }.first?.id
@@ -170,8 +207,14 @@ func releaseTests() {
     assert(parseAccounts(try! JSONEncoder().encode(duplicates)) == nil)
     let now = Date(timeIntervalSince1970: 1_800_000_000)
     let week = WindowQuota(used: 50, reset: now.addingTimeInterval(7200))
+    let depleted = recommend(weekly: WindowQuota(used: 0, reset: now.addingTimeInterval(60)), primary: WindowQuota(used: 99, reset: now.addingTimeInterval(60)), updated: now, now: now)
+    let usable = recommend(weekly: WindowQuota(used: 30, reset: now.addingTimeInterval(86400)), primary: WindowQuota(used: 30, reset: now.addingTimeInterval(7200)), updated: now, now: now)
+    assert(recommendationWinner(Array(many.prefix(2)), values: [many[0].id: depleted, many[1].id: usable], provider: "codex") == many[1].id, "usable account outranks almost-depleted short reset")
     assert(recommend(weekly: week, primary: nil, updated: now, now: now).score == 25)
-    assert(recommend(weekly: week, primary: WindowQuota(used: 90, reset: now.addingTimeInterval(7200)), updated: now, now: now).score == 5)
+    assert(recommend(weekly: week, primary: WindowQuota(used: 90, reset: now.addingTimeInterval(7200)), updated: now, now: now).score == 25, "ranking uses weekly pace after primary validation")
+    let shortLimited = recommend(weekly: WindowQuota(used: 60, reset: now.addingTimeInterval(3600)), primary: WindowQuota(used: 80, reset: now.addingTimeInterval(18000)), updated: now, now: now)
+    let otherReady = recommend(weekly: WindowQuota(used: 40, reset: now.addingTimeInterval(7200)), primary: WindowQuota(used: 0, reset: now.addingTimeInterval(3600)), updated: now, now: now)
+    assert(recommendationWinner(Array(many.prefix(2)), values: [many[0].id: shortLimited, many[1].id: otherReady], provider: "codex") == many[0].id, "same headroom tier uses weekly pace even if primary pace is lower")
     assert(recommend(weekly: week, primary: nil, updated: now.addingTimeInterval(-901), now: now).score == nil)
     assert(recommend(weekly: week, primary: nil, updated: now.addingTimeInterval(61), now: now).score == nil)
     assert(recommend(weekly: nil, primary: nil, updated: now, now: now).score == nil)
@@ -248,6 +291,8 @@ struct QuotaViewData {
     var weekly: WindowQuota? = nil
     var primary: WindowQuota? = nil
     var updatedDate: Date? = nil
+    var resetCount: Int? = nil
+    var resetExpiry: Date? = nil
 }
 func alertSnapshot(id: String, value: QuotaViewData, now: Date) -> AlertSnapshot? {
     guard value.error == nil, recommend(weekly: value.weekly, primary: value.primary, updated: value.updatedDate, now: now).score != nil else { return nil }
@@ -295,7 +340,7 @@ func quotaData(_ data: Data, account: Account) -> QuotaViewData {
                          updated: localDate(usage["updatedAt"] as? String), details: line,
                          weekly: WindowQuota(used: week["usedPercent"] as? Double, reset: dateValue(week["resetsAt"] as? String)),
                          primary: primary.map { WindowQuota(used: $0["usedPercent"] as? Double, reset: dateValue($0["resetsAt"] as? String)) },
-                         updatedDate: dateValue(usage["updatedAt"] as? String))
+                         updatedDate: dateValue(usage["updatedAt"] as? String), resetCount: resets["available"] as? Int, resetExpiry: dateValue(resets["nextExpiresAt"] as? String))
 }
 func quotaData(_ data: Data, provider: String, email: String) -> QuotaViewData {
     quotaData(data, account: Account(id: "\(provider):test", provider: provider, key: "test", label: "test", email: email, usageAccount: nil))
@@ -602,87 +647,96 @@ final class RecommendationStrip: NSView {
         let surface = Surface(); surface.tint = Palette.ribbon
         surface.translatesAutoresizingMaskIntoConstraints = false; addSubview(surface)
         title.textColor = Palette.ink
-        let copy = NSStackView(views: [title, reason]); copy.orientation = .vertical; copy.alignment = .leading; copy.spacing = 6
+        let top = NSStackView(views: [title, NSView(), button]); top.spacing = 8
         button.target = target; button.action = action; button.bezelStyle = .rounded; button.bezelColor = Palette.teal; button.isEnabled = false
-        let stack = NSStackView(views: [copy, NSView(), button]); stack.spacing = 24
+        let stack = NSStackView(views: [top, reason]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false; addSubview(stack)
-        NSLayoutConstraint.activate([surface.leadingAnchor.constraint(equalTo: leadingAnchor), surface.trailingAnchor.constraint(equalTo: trailingAnchor), surface.topAnchor.constraint(equalTo: topAnchor), surface.bottomAnchor.constraint(equalTo: bottomAnchor), stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20), stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20), stack.topAnchor.constraint(equalTo: topAnchor, constant: 17), stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -17)])
+        NSLayoutConstraint.activate([surface.leadingAnchor.constraint(equalTo: leadingAnchor), surface.trailingAnchor.constraint(equalTo: trailingAnchor), surface.topAnchor.constraint(equalTo: topAnchor), surface.bottomAnchor.constraint(equalTo: bottomAnchor), stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12), stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12), stack.topAnchor.constraint(equalTo: topAnchor, constant: 10), stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10), top.widthAnchor.constraint(equalTo: stack.widthAnchor), reason.widthAnchor.constraint(equalTo: stack.widthAnchor)])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 }
 final class AccountRow: NSView {
-    let percentage = label("—", size: 29, bold: true)
-    let weeklyCaption = label("เหลือในสัปดาห์", size: 12, color: .secondaryLabelColor)
-    let balance = label("กำลังอ่านโควตา…")
-    let times = label("", size: 12, color: Palette.slate)
-    let ranking = label("ยังไม่มีคำแนะนำ", size: 11, color: .secondaryLabelColor)
-    let progress = NSProgressIndicator()
+    let primaryText = label("รอบหลัก —", size: 14, bold: true)
+    let weeklyText = label("สัปดาห์ —", size: 14, bold: true)
+    let primaryTime = label("", size: 11, color: Palette.slate)
+    let weeklyTime = label("", size: 11, color: Palette.slate)
+    let primaryBar = NSProgressIndicator()
+    let weeklyBar = NSProgressIndicator()
+    var primaryMetric: NSStackView!
+    let resetText = label("", size: 11, color: Palette.slate)
+    let stateText = label("", size: 11, color: Palette.teal)
     let switchButton: NSButton
+    let resetButton = NSButton(title: "ใช้สิทธิ์รีเซ็ตฟรี", target: nil, action: nil)
     let detailsButton = NSButton(title: "รายละเอียด", target: nil, action: nil)
-    var details = "กำลังอ่านโควตา…"
+    var details = ""
     var identityDetails = ""
-    var accent: NSColor = .systemTeal
+    let provider: String
     init(account: Account, number: Int, target: AnyObject, action: Selector) {
+        provider = account.provider
         switchButton = NSButton(title: "ใช้บัญชีนี้", target: target, action: action)
         super.init(frame: .zero)
         identityDetails = "\(account.label)\n\(account.email ?? "ยังไม่เชื่อมตัวตนโควตา")\n"
-        let provider = account.provider == "codex" ? "Codex" : "Claude"
-        switchButton.identifier = NSUserInterfaceItemIdentifier(account.id); switchButton.bezelStyle = .rounded
+        switchButton.identifier = NSUserInterfaceItemIdentifier(account.id); switchButton.bezelStyle = .rounded; switchButton.controlSize = .small
         switchButton.setAccessibilityLabel("สลับไป \(provider) บัญชี \(number)")
-        let identity = NSStackView(views: [label("บัญชี \(number)", size: 15, color: Palette.ink, bold: true), detailsButton])
-        identity.orientation = .vertical; identity.alignment = .leading; identity.spacing = 2
-        let metric = NSStackView(views: [percentage, weeklyCaption])
-        metric.alignment = .lastBaseline; metric.spacing = 8
-        accent = Palette.teal
-        percentage.font = .monospacedDigitSystemFont(ofSize: 23, weight: .semibold)
-        percentage.setContentCompressionResistancePriority(.required, for: .horizontal)
-        detailsButton.bezelStyle = .inline; detailsButton.controlSize = .small
-        detailsButton.target = self; detailsButton.action = #selector(showDetails)
-        detailsButton.setAccessibilityLabel("รายละเอียดโควตา \(provider) บัญชี \(number)")
-        progress.style = .bar; progress.isIndeterminate = false; progress.minValue = 0; progress.maxValue = 100
-        progress.controlSize = .small
-        let quota = NSStackView(views: [metric, progress]); quota.orientation = .vertical; quota.alignment = .leading; quota.spacing = 8
-        let reset = NSStackView(views: [balance, times]); reset.orientation = .vertical; reset.alignment = .leading; reset.spacing = 5
-        let stack = NSStackView(views: [identity, quota, reset, NSView(), switchButton])
-        stack.orientation = .horizontal; stack.alignment = .centerY; stack.spacing = 24
+        detailsButton.bezelStyle = .inline; detailsButton.controlSize = .small; detailsButton.target = self; detailsButton.action = #selector(showDetails)
+        resetButton.identifier = NSUserInterfaceItemIdentifier(account.id); resetButton.bezelStyle = .rounded; resetButton.controlSize = .small; resetButton.isEnabled = false
+        resetButton.toolTip = "ยังไม่มีช่องทางรีเซ็ตที่ยืนยันได้สำหรับแอปนี้"
+        let title = NSStackView(views: [label("บัญชี \(number)", size: 15, color: Palette.ink, bold: true), stateText, NSView(), detailsButton, switchButton]); title.spacing = 6
+        func metric(_ text: NSTextField, _ bar: NSProgressIndicator, _ time: NSTextField) -> NSStackView {
+            bar.style = .bar; bar.isIndeterminate = false; bar.minValue = 0; bar.maxValue = 100; bar.controlSize = .small
+            text.font = .monospacedDigitSystemFont(ofSize: 14, weight: .semibold)
+            let stack = NSStackView(views: [text, bar, time]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4
+            for view in [text, bar, time] { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+            return stack
+        }
+        primaryMetric = metric(primaryText, primaryBar, primaryTime)
+        let metrics = NSStackView(views: [primaryMetric, metric(weeklyText, weeklyBar, weeklyTime)])
+        metrics.detachesHiddenViews = true
+        metrics.distribution = .fillEqually; metrics.alignment = .top; metrics.spacing = 18
+        let bottom = NSStackView(views: [resetText, NSView(), resetButton]); bottom.spacing = 6
+        resetButton.isHidden = provider != "codex"
+        let stack = NSStackView(views: [title, metrics, bottom]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 9
         stack.translatesAutoresizingMaskIntoConstraints = false; addSubview(stack)
-        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20), stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20), stack.topAnchor.constraint(equalTo: topAnchor, constant: 18), stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -18), identity.widthAnchor.constraint(equalToConstant: 112), quota.widthAnchor.constraint(equalToConstant: 220), progress.widthAnchor.constraint(equalTo: quota.widthAnchor), reset.widthAnchor.constraint(greaterThanOrEqualToConstant: 225)])
-        toolTip = "\(account.label) · \(account.email ?? "ยังไม่เชื่อมตัวตนโควตา")"
+        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8), stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8), stack.topAnchor.constraint(equalTo: topAnchor, constant: 11), stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -11)])
+        for view in [title, metrics, bottom] { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         render(QuotaViewData(error: "กำลังอ่านโควตา…"))
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func render(_ value: QuotaViewData) {
-        let low = value.percent.map { $0 <= 10 } ?? false
-        percentage.textColor = low ? .systemRed : accent
-        weeklyCaption.stringValue = low ? "เหลือน้อยในสัปดาห์" : "เหลือในสัปดาห์"
-        percentage.stringValue = value.percent.map { String(format: "%.0f%%", $0) } ?? "—"
-        percentage.setAccessibilityLabel(value.percent.map { "โควตาสัปดาห์เหลือ \(Int($0)) เปอร์เซ็นต์" } ?? "โควตาสัปดาห์ไม่ทราบ")
-        progress.isHidden = value.percent == nil
-        progress.doubleValue = value.percent ?? 0
-        progress.setAccessibilityLabel("โควตาสัปดาห์ที่เหลือ")
-        balance.stringValue = value.error == nil ? resetSummary(value.weekly?.reset) : "ยังอ่านโควตาไม่ได้"
-        times.stringValue = value.error == nil ? value.resetTime : "ลองรีเฟรช หรือดูรายละเอียด"
+        primaryMetric.isHidden = value.primary == nil
+        func metric(_ quota: WindowQuota?, _ title: String, _ text: NSTextField, _ bar: NSProgressIndicator, _ time: NSTextField) {
+            let amount = percentRemaining(quota?.used)
+            text.stringValue = "\(title) \(amount.map { String(format: "%.0f%%", $0) } ?? "—")"
+            text.textColor = amount.map { $0 < 20 ? .systemOrange : Palette.ink } ?? Palette.slate
+            bar.doubleValue = amount ?? 0; bar.isHidden = amount == nil
+            bar.setAccessibilityLabel("\(title)คงเหลือ \(amount.map { String(Int($0)) } ?? "ไม่ทราบ") เปอร์เซ็นต์")
+            time.stringValue = resetSummary(quota?.reset) + (quota?.reset.map { "\n" + shortDate($0) } ?? "")
+            if let reset = quota?.reset { time.toolTip = localDate(ISO8601DateFormatter().string(from: reset)) }
+        }
+        metric(value.primary, "รอบหลัก", primaryText, primaryBar, primaryTime)
+        metric(value.weekly, "สัปดาห์", weeklyText, weeklyBar, weeklyTime)
+        if provider == "codex" {
+            let count = value.resetCount.map(String.init) ?? value.resets
+            resetText.stringValue = "รีเซ็ตฟรี \(count) ครั้ง" + (value.resetExpiry.map { " · หมด \(shortDate($0))" } ?? " · ไม่ทราบวันหมดอายุ")
+        } else { resetText.stringValue = "ยอดคงเหลือ \(value.balance)" }
         details = identityDetails + (value.error ?? value.details)
-        ranking.stringValue = "ยังไม่มีคำแนะนำ"
-        toolTip = details; detailsButton.toolTip = details
+        if value.primary == nil { details += "\nรอบสั้น: ผู้ให้บริการไม่ส่งข้อมูล · ใช้ข้อมูลรายสัปดาห์" }
+        stateText.stringValue = value.error == nil ? "" : "รอข้อมูล"
+        detailsButton.toolTip = details
     }
     func rank(_ recommendation: Recommendation, selected: Bool) {
-        ranking.stringValue = (selected ? "แนะนำ · " : "") + recommendation.reason
-        ranking.textColor = selected ? .systemTeal : .secondaryLabelColor
-        ranking.font = selected ? .boldSystemFont(ofSize: 11) : .systemFont(ofSize: 11)
-        details += "\n\n" + ranking.stringValue + "\nคำนวณจากเปอร์เซ็นต์ที่เหลือต่อชั่วโมงถึงรีเซ็ต ใช้รอบที่จำกัดกว่า ไม่ใช่จำนวนโทเคนหรือความคุ้มค่าของราคา เปรียบเทียบภายในบริการเท่านั้น ข้อมูลต้องไม่เกิน 15 นาที"
-        if recommendation.score == nil {
-            percentage.textColor = Palette.slate
-            weeklyCaption.stringValue = "รอยืนยันข้อมูล"
-            times.stringValue = "ข้อมูลยังใช้แนะนำไม่ได้ · ดูรายละเอียด"
-        }
+        stateText.stringValue = recommendation.score == nil ? "รอข้อมูลใหม่" : selected ? "แนะนำ" : ""
+        details += "\n\n" + recommendation.reason + "\nเลือกบัญชีที่รอบหลักเหลืออย่างน้อย 20% และสัปดาห์ 10% ก่อน หากมี จากนั้นจัดตามเปอร์เซ็นต์โควตาสัปดาห์ต่อชั่วโมงถึงรีเซ็ต ไม่ใช่จำนวนโทเคนหรือการเทียบราคา"
         toolTip = details
     }
     @objc func showDetails() {
-        let alert = NSAlert(); alert.messageText = "รายละเอียดโควตา"
-        alert.informativeText = details; alert.addButton(withTitle: "ปิด")
+        let alert = NSAlert(); alert.messageText = "รายละเอียดโควตา"; alert.informativeText = details; alert.addButton(withTitle: "ปิด")
         if let window { alert.beginSheetModal(for: window) }
     }
+}
+func shortDate(_ date: Date) -> String {
+    let formatter = DateFormatter(); formatter.locale = Locale(identifier: "th_TH"); formatter.timeZone = TimeZone(identifier: "Asia/Bangkok"); formatter.dateFormat = "d MMM HH:mm"
+    return formatter.string(from: date)
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -693,6 +747,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var columns: [NSStackView] = []
     var addButtons: [NSButton] = []
     var quotaValues: [String: QuotaViewData] = [:]
+    var resetValues: [String: (ResetAvailability, Date)] = [:]
     let status = label("กำลังค้นหาบัญชี…", size: 12, color: .secondaryLabelColor)
     let dependencyNotice = label("", size: 12, color: .secondaryLabelColor)
     let refreshButton = NSButton(title: "รีเฟรช", target: nil, action: nil)
@@ -719,9 +774,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1080, height: 860), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 800), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "AI Accounts · Beta"
-        window.minSize = NSSize(width: 1000, height: 650)
+        window.minSize = NSSize(width: 1080, height: 650)
         window.backgroundColor = Palette.canvas
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
@@ -738,7 +793,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         connectButton.bezelStyle = .rounded
         let context = NSButton(title: "บริบทกลาง", target: self, action: #selector(openContext))
         context.bezelStyle = .rounded
-        let header = NSStackView(views: [icon, heading, NSView(), context, connectButton, refreshButton]); header.spacing = 12
+        let header = NSStackView(views: [icon, heading, NSView(), refreshButton]); header.spacing = 12
         let downloads = NSStackView()
         for (name, url) in [("ดาวน์โหลด Codex", "https://chatgpt.com/codex/"), ("ดาวน์โหลด Claude", "https://claude.com/download")] {
             let button = NSButton(title: name, target: self, action: #selector(download(_:)))
@@ -746,6 +801,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             downloads.addArrangedSubview(button)
         }
         downloads.addArrangedSubview(NSView())
+        downloads.addArrangedSubview(context); downloads.addArrangedSubview(connectButton)
         downloads.addArrangedSubview(dependencyNotice)
         notificationToggle.target = self; notificationToggle.action = #selector(toggleNotifications)
         notificationToggle.state = defaults.bool(forKey: "alertsEnabled") ? .on : .off
@@ -753,18 +809,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let test = NSButton(title: "ทดสอบ", target: self, action: #selector(testNotification)); test.bezelStyle = .inline
         let settings = NSButton(title: "ตั้งค่าการแจ้งเตือน", target: self, action: #selector(notificationSettings)); settings.bezelStyle = .inline
         let guidance = NSStackView(views: [notificationToggle, test, settings, NSView()]); guidance.spacing = 12
-        let providerColumns = NSStackView(); providerColumns.orientation = .vertical; providerColumns.alignment = .leading; providerColumns.spacing = 24
+        let providerColumns = NSStackView(); providerColumns.orientation = .horizontal; providerColumns.alignment = .top; providerColumns.distribution = .fillEqually; providerColumns.spacing = 16
         for provider in ["codex", "claude"] {
             let column = NSStackView(); column.orientation = .vertical; column.alignment = .leading; column.spacing = 0
             columns.append(column)
             let surface = Surface(); surface.translatesAutoresizingMaskIntoConstraints = false
             column.translatesAutoresizingMaskIntoConstraints = false; surface.addSubview(column); providerColumns.addArrangedSubview(surface)
-            NSLayoutConstraint.activate([surface.widthAnchor.constraint(equalTo: providerColumns.widthAnchor), column.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 16), column.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -16), column.topAnchor.constraint(equalTo: surface.topAnchor, constant: 18), column.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -6)])
+            NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 12), column.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -12), column.topAnchor.constraint(equalTo: surface.topAnchor, constant: 12), column.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -6)])
             let add = NSButton(title: "เพิ่มบัญชี", target: self, action: #selector(addAccount(_:)))
             add.identifier = NSUserInterfaceItemIdentifier(provider); add.bezelStyle = .rounded; addButtons.append(add)
             let title = NSStackView(views: [label(provider == "codex" ? "Codex" : "Claude", size: 18, color: Palette.ink, bold: true), NSView(), add])
             column.addArrangedSubview(title); title.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
-            column.setCustomSpacing(14, after: title)
+            column.setCustomSpacing(10, after: title)
             let strip = RecommendationStrip(target: self, action: #selector(switchAccount(_:))); strips[provider] = strip
             column.addArrangedSubview(strip); strip.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
             column.setCustomSpacing(6, after: strip)
@@ -783,9 +839,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             view.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -25).isActive = true
         }
         NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), header.heightAnchor.constraint(equalToConstant: 56),
-            guidance.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 16),
-            scroll.topAnchor.constraint(equalTo: guidance.bottomAnchor, constant: 18), scroll.bottomAnchor.constraint(equalTo: downloads.topAnchor, constant: -14),
+            header.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), header.heightAnchor.constraint(equalToConstant: 48),
+            guidance.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 7),
+            scroll.topAnchor.constraint(equalTo: guidance.bottomAnchor, constant: 6), scroll.bottomAnchor.constraint(equalTo: downloads.topAnchor, constant: -8),
             downloads.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -10),
             footer.bottomAnchor.constraint(equalTo: status.topAnchor, constant: -8), status.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)
         ])
@@ -891,6 +947,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for (id, row) in rows {
             let provider = accounts.first { $0.id == id }?.provider
             row.switchButton.isEnabled = !busy && (provider == "codex" ? dependencies.codexApp : dependencies.claudeApp)
+            if let (value, fetched) = resetValues[id] {
+                row.resetButton.isEnabled = !busy && canReset(value, fetched: fetched, now: Date())
+                row.resetButton.title = value.uncertain == true ? "ตรวจคำขอเดิม" : "ใช้สิทธิ์รีเซ็ตฟรี"
+                row.resetButton.toolTip = resetReasonThai(value.reason)
+                if let count = value.availableCount { row.resetText.stringValue = "รีเซ็ตฟรี \(count) ครั้ง" + (value.expiresAt.map { " · หมด \(shortDate(Date(timeIntervalSince1970: $0)))" } ?? " · ไม่ทราบวันหมดอายุ") }
+            } else { row.resetButton.isEnabled = false; row.resetButton.toolTip = "กำลังตรวจสิทธิ์รีเซ็ตจากผู้ให้บริการ" }
         }
         for button in addButtons { button.isEnabled = !busy && (button.identifier?.rawValue == "codex" ? dependencies.codexApp : dependencies.claudeApp) }
         for (provider, strip) in strips { strip.button.isEnabled = !busy && strip.button.identifier != nil && (provider == "codex" ? dependencies.codexApp : dependencies.claudeApp) }
@@ -908,6 +970,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             for account in matching {
                 let row = AccountRow(account: account, number: displayNumbers[account.id]!, target: self, action: #selector(switchAccount(_:)))
+                row.resetButton.target = self; row.resetButton.action = #selector(resetAccount(_:))
                 rows[account.id] = row; columns[index].addArrangedSubview(row)
                 row.widthAnchor.constraint(equalTo: columns[index].widthAnchor).isActive = true
                 let divider = NSBox(); divider.boxType = .separator
@@ -928,11 +991,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for provider in ["codex", "claude"] {
             let winner = recommendationWinner(accounts, values: values, provider: provider)
             if let strip = strips[provider] {
-                if let winner, let number = displayNumbers[winner], let value = quotaValues[winner], let snapshot = alertSnapshot(id: winner, value: value, now: now) {
+                if let winner, let number = displayNumbers[winner], let value = quotaValues[winner], alertSnapshot(id: winner, value: value, now: now) != nil {
                     strip.title.stringValue = "แนะนำบัญชี \(number)"
-                    strip.reason.stringValue = "เหลือ \(Int(snapshot.remaining))% · \(resetSummary(snapshot.reset))"
+                    let runner = recommendationWinner(accounts.filter { $0.id != winner }, values: values, provider: provider)
+                    let ready = values[winner]?.usable == true
+                    let base = value.primary.map { "รอบหลัก \(remaining($0.used)) · สัปดาห์ \(remaining(value.weekly?.used))" } ?? "ใช้ข้อมูลรายสัปดาห์ · เหลือ \(remaining(value.weekly?.used))"
+                    var comparison = "\(resetSummary(value.weekly?.reset)) · \(ready ? "มีโควตาพร้อมใช้" : "โควตาเหลือน้อยทุกบัญชี")"
+                    if let runner, let runnerValue = quotaValues[runner], let n = displayNumbers[runner] {
+                        if ready && values[runner]?.usable == false {
+                            comparison = (runnerValue.primary?.used ?? 0) > 80 ? "พร้อมกว่า บัญชี \(n) ที่รอบหลักเหลือ \(remaining(runnerValue.primary?.used))" : "พร้อมกว่า บัญชี \(n) ที่สัปดาห์เหลือ \(remaining(runnerValue.weekly?.used))"
+                        }
+                        else if let reset = value.weekly?.reset, let other = runnerValue.weekly?.reset, reset < other { comparison = "สัปดาห์รีเซ็ตก่อนบัญชี \(n) · \(resetSummary(reset))" }
+                        else { comparison = values[winner]?.score == values[runner]?.score ? "ใกล้เคียงบัญชี \(n) · เลือกตามลำดับคงที่" : "โควตาต่อเวลาถึงรีเซ็ตสูงกว่าบัญชี \(n)" }
+                    }
+                    strip.reason.stringValue = base + "\n" + comparison
                     strip.button.title = "ใช้บัญชี \(number)"; strip.button.identifier = NSUserInterfaceItemIdentifier(winner)
-                    strip.toolTip = "คำนวณจากโควตาที่เหลือต่อเวลาถึงรีเซ็ต ภายในบริการเดียวกัน ใช้รอบที่จำกัดกว่า ไม่ใช่จำนวนโทเคนหรือการเทียบราคา"
+                    strip.toolTip = "ให้บัญชีรอบหลัก ≥20% และสัปดาห์ ≥10% มาก่อน แล้วเทียบเปอร์เซ็นต์โควตาสัปดาห์ต่อชั่วโมงถึงรีเซ็ต เป็นคำแนะนำโดยประมาณ ไม่ใช่จำนวนโทเคนหรือการเทียบราคา"
                 } else {
                     strip.title.stringValue = "ยังแนะนำบัญชีไม่ได้"
                     strip.reason.stringValue = accounts.contains { $0.provider == provider } ? "ต้องมีข้อมูลโควตาล่าสุด · ลองรีเฟรช" : "เพิ่มบัญชีเพื่อเริ่มดูโควตา"
@@ -983,6 +1057,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     self.evaluateAlerts(provider: provider)
                 }
             }
+            for account in list.accounts where account.provider == "codex" {
+                let (data, _) = runHelper(["reset-status", "codex", account.key], timeout: 45)
+                let value = data.flatMap { try? JSONDecoder().decode(ResetAvailability.self, from: $0) }
+                DispatchQueue.main.async {
+                    guard let self, self.refreshGeneration == generation else { return }
+                    self.resetValues[account.id] = value.map { ($0, Date()) }
+                    self.updateControls()
+                }
+            }
             DispatchQueue.main.async {
                 guard let self, self.refreshGeneration == generation else { return }
                 self.refreshing = false; self.updateControls()
@@ -1008,7 +1091,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let number = displayNumbers[account.id] ?? 1
             let used = [62.0, 21.0, 88.0][(number - 1) % 3]
             let reset = now.addingTimeInterval(Double(number == 2 ? 7200 : 86400 * number))
-            quotaValues[account.id] = mode == "no-data" ? QuotaViewData(error: "ข้อมูลตัวอย่าง: ไม่พบโควตา") : QuotaViewData(percent: 100 - used, balance: "ตัวอย่าง", resetTime: localDate(ISO8601DateFormatter().string(from: reset)), updated: "ตัวอย่าง", details: "ข้อมูลสังเคราะห์สำหรับตรวจหน้าจอ ไม่มีการเชื่อมต่อหรือสลับบัญชีจริง", weekly: WindowQuota(used: used, reset: reset), updatedDate: mode == "stale" ? now.addingTimeInterval(-901) : now)
+            quotaValues[account.id] = mode == "no-data" ? QuotaViewData(error: "ข้อมูลตัวอย่าง: ไม่พบโควตา") : QuotaViewData(percent: 100 - used, balance: "0 Credits", resetTime: localDate(ISO8601DateFormatter().string(from: reset)), updated: "ตัวอย่าง", details: "ข้อมูลสังเคราะห์สำหรับตรวจหน้าจอ ไม่มีการเชื่อมต่อหรือสลับบัญชีจริง", weekly: WindowQuota(used: used, reset: reset), primary: WindowQuota(used: number == 1 ? 99 : 40, reset: now.addingTimeInterval(3600)), updatedDate: mode == "stale" ? now.addingTimeInterval(-901) : now, resetCount: 2, resetExpiry: now.addingTimeInterval(86400))
         }
         if mode == "denied" { notificationToggle.state = .on; nativeAllowed = false; notice.stringValue = "Codex แนะนำบัญชี 2 · เหลือ 79% · รีเซ็ตใน 2 ชม. (ตัวอย่าง)" }
         updateNotificationHint(); updateRecommendations(); lastRefresh = now
@@ -1032,6 +1115,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 let alert = NSAlert(); alert.messageText = failure == nil ? "ผลการดำเนินการ" : "ดำเนินการไม่สำเร็จ"
                 alert.informativeText = message; alert.addButton(withTitle: "ปิด")
                 alert.beginSheetModal(for: self.window) { _ in self.refresh() }
+            }
+        }
+    }
+    @objc func resetAccount(_ sender: NSButton) {
+        guard fixtureMode == nil, !state.busy, !refreshing, let id = sender.identifier?.rawValue, let account = accounts.first(where: { $0.id == id && $0.provider == "codex" }) else { return }
+        refreshing = true; updateControls(); status.stringValue = "กำลังตรวจสิทธิ์และตัวตนก่อนรีเซ็ต…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let (data, error) = runHelper(["reset-status", "codex", account.key], timeout: 45)
+            let value = data.flatMap { try? JSONDecoder().decode(ResetAvailability.self, from: $0) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.refreshing = false
+                self.resetValues[id] = value.map { ($0, Date()) }; self.updateControls()
+                guard let value, canReset(value, fetched: Date(), now: Date()) else {
+                    self.status.stringValue = resetReasonThai(value?.reason ?? error); return
+                }
+                let alert = NSAlert(); alert.alertStyle = .warning
+                alert.messageText = value.uncertain == true ? "ตรวจคำขอรีเซ็ตเดิม?" : "ใช้สิทธิ์รีเซ็ตฟรี 1 ครั้ง?"
+                alert.informativeText = "Codex บัญชี \(self.displayNumbers[id] ?? 0)\n\(value.accountEmail ?? value.accountId ?? "ไม่ทราบตัวตน")\nเหลือ \(value.availableCount ?? 0) สิทธิ์" + (value.expiresAt.map { " · หมด \(shortDate(Date(timeIntervalSince1970: $0)))" } ?? "") + "\n\nรีเซ็ตขีดจำกัดการใช้งานของบัญชีนี้ตามสิทธิ์ที่ผู้ให้บริการกำหนด ไม่สลับบัญชี ไม่ซื้อเครดิต" + (value.uncertain == true ? "\nส่งคำขอเดิมด้วยรหัสเดิมเพื่อยืนยันผล ไม่สร้างคำขอใหม่" : "\nผู้ให้บริการจะตรวจสิทธิ์และโควตาอีกครั้งก่อนใช้")
+                alert.addButton(withTitle: "ยกเลิก").keyEquivalent = "\r"
+                alert.addButton(withTitle: value.uncertain == true ? "ตรวจคำขอเดิม" : "ยืนยันใช้ 1 สิทธิ์").keyEquivalent = ""
+                guard alert.runModal() == .alertSecondButtonReturn else { self.status.stringValue = "ยกเลิกแล้ว ไม่ได้ใช้สิทธิ์รีเซ็ต"; return }
+                self.mutation(["reset", "codex", account.key, "--confirmed"], timeout: 60)
             }
         }
     }
@@ -1093,6 +1199,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 final class FlippedView: NSView { override var isFlipped: Bool { true } }
 
 let app = NSApplication.shared
+if CommandLine.arguments.contains("--layout-test") {
+    let testWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 250), styleMask: [.titled], backing: .buffered, defer: false)
+    let account = Account(id: "codex:main", provider: "codex", key: "main", label: "test", email: nil, usageAccount: nil)
+    let row = AccountRow(account: account, number: 1, target: NSObject(), action: NSSelectorFromString("unused"))
+    row.translatesAutoresizingMaskIntoConstraints = false
+    let content = testWindow.contentView!; content.addSubview(row)
+    NSLayoutConstraint.activate([row.leadingAnchor.constraint(equalTo: content.leadingAnchor), row.trailingAnchor.constraint(equalTo: content.trailingAnchor), row.topAnchor.constraint(equalTo: content.topAnchor)])
+    let now = Date()
+    for primary in [WindowQuota(used: 40, reset: now.addingTimeInterval(3600)), nil, WindowQuota(used: 20, reset: now.addingTimeInterval(3600)), nil] {
+        row.render(QuotaViewData(weekly: WindowQuota(used: 30, reset: now.addingTimeInterval(7200)), primary: primary, updatedDate: now))
+        content.layoutSubtreeIfNeeded()
+        for bar in primary == nil ? [row.weeklyBar] : [row.primaryBar, row.weeklyBar] {
+            let frame = row.convert(bar.bounds, from: bar)
+            assert(frame.minX >= 0 && frame.maxX <= row.bounds.width + 0.5, "quota progress must stay inside account card: \(frame), row \(row.bounds)")
+        }
+    }
+    print("PASS: progress frame containment with primary present/absent transitions")
+    exit(0)
+}
 let delegate = AppDelegate()
 app.setActivationPolicy(.regular)
 app.delegate = delegate

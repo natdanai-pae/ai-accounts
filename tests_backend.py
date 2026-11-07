@@ -10,6 +10,114 @@ from types import SimpleNamespace
 SOURCE = pathlib.Path(__file__).with_name('backend.py')
 
 class BackendTests(unittest.TestCase):
+    def test_reset_protocol_is_implemented(self):
+        import backend as mod
+        self.assertTrue(hasattr(mod.Backend, 'reset_status'), 'supported reset preflight is missing')
+
+    def test_reset_guard_idempotency_and_completed_outcomes(self):
+        import backend as mod
+        import contextlib
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = mod.Backend(tmp)
+            profile = backend.codex_base / 'profiles/test'
+            mod.atomic_json(profile / 'metadata.json', {'email': 'test@example.test', 'accountId': 'sha256:' + mod.hashlib.sha256(b'account-fixture').hexdigest()[:16]})
+            mod.atomic_json(profile / 'auth.json', {'fixture': True})
+            usage = {'accountId': 'account-fixture', 'rateLimitsByLimitId': {'codex': {'primary': {'usedPercent': 90, 'windowDurationMins': 300, 'resetsAt': mod.time.time() + 300}}}, 'rateLimitResetCredits': {'availableCount': 2, 'credits': [{'id': 'credit-fixture', 'status': 'available', 'resetType': 'codexRateLimits', 'expiresAt': mod.time.time() + 3600}]}}
+            calls = []
+            outcomes = [mod.SafeError('fixture transport loss'), {'outcome': 'alreadyRedeemed'}, {'outcome': 'reset'}, {'outcome': 'noCredit'}, {'outcome': 'nothingToReset'}]
+            def rpc(method, params):
+                calls.append((method, params))
+                if method == 'account/read':
+                    return {'account': {'type': 'chatgpt', 'email': 'test@example.test'}}
+                if method == 'account/rateLimits/read':
+                    return usage
+                if method == 'account/rateLimitResetCredit/consume':
+                    result = outcomes.pop(0)
+                    if isinstance(result, Exception):
+                        raise result
+                    return result
+                self.fail('unexpected RPC method')
+            @contextlib.contextmanager
+            def session(_, **kwargs):
+                yield SimpleNamespace(request=rpc)
+            with patch.object(backend, 'reset_session', side_effect=session):
+                self.assertTrue(backend.reset_status('codex', 'test')['eligible'])
+                metadata = mod.read_json(profile / 'metadata.json', {})
+                for invalid in (metadata['accountId'].upper(), metadata['accountId'] + '0', 'account-fixture'):
+                    mod.atomic_json(profile / 'metadata.json', dict(metadata, accountId=invalid))
+                    self.assertFalse(backend.reset_status('codex', 'test')['eligible'])
+                mod.atomic_json(profile / 'metadata.json', metadata)
+                with self.assertRaises(mod.SafeError):
+                    backend.reset_account('codex', 'test', False)
+                usage['accountId'] = 'different-account'
+                self.assertFalse(backend.reset_status('codex', 'test')['eligible'])
+                usage['accountId'] = 'account-fixture'
+                usage['rateLimitsByLimitId']['codex']['primary']['usedPercent'] = 89
+                self.assertFalse(backend.reset_status('codex', 'test')['eligible'])
+                usage['rateLimitsByLimitId']['codex']['primary']['usedPercent'] = 90
+                first = backend.reset_account('codex', 'test', True)
+                self.assertEqual(first['outcome'], 'uncertain')
+                second = backend.reset_account('codex', 'test', True)
+                self.assertEqual(second['outcome'], 'alreadyRedeemed')
+                self.assertTrue(second['ok'])
+                self.assertEqual(first['attemptId'], second['attemptId'])
+                consumes = [p for m, p in calls if m.endswith('/consume')]
+                self.assertEqual(len(consumes), 2)
+                self.assertEqual(consumes[0]['idempotencyKey'], consumes[1]['idempotencyKey'])
+                self.assertEqual(mod.read_json(backend.state / 'reset-attempts.json', {})['test']['state'], 'alreadyRedeemed')
+                for expected in ('reset', 'noCredit', 'nothingToReset'):
+                    result = backend.reset_account('codex', 'test', True)
+                    self.assertEqual(result['outcome'], expected)
+                    self.assertEqual(result['ok'], expected == 'reset')
+                    self.assertEqual(calls[-1][0], 'account/rateLimitResetCredit/consume')
+                    self.assertNotEqual(result['attemptId'], first['attemptId'])
+
+    def test_reset_rpc_uses_overall_deadline(self):
+        import backend as mod
+        fake = mod.ResetSession.__new__(mod.ResetSession)
+        fake.process = SimpleNamespace(stdin=mod.io.BytesIO())
+        fake.messages = mod.queue.Queue()
+        fake.counter = 0
+        fake.deadline = mod.time.monotonic() - 1
+        with self.assertRaises(mod.SafeError):
+            fake.request('account/read', {})
+        self.assertEqual(fake.process.stdin.getvalue(), b'')
+
+    @unittest.skipIf(os.name == 'nt', 'Windows equivalent lock checked in native CI')
+    def test_reset_lock_rejects_concurrent_same_profile(self):
+        import backend as mod
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / 'account.lock'
+            with mod.lock(path, nonblocking=True):
+                with self.assertRaises(mod.SafeError):
+                    with mod.lock(path, nonblocking=True):
+                        self.fail('concurrent lock must reject')
+
+    def test_reset_rejects_expired_unknown_or_noncore_credit(self):
+        import backend as mod
+        import contextlib
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = mod.Backend(tmp)
+            profile = backend.codex_base / 'profiles/test'
+            mod.atomic_json(profile / 'metadata.json', {'email': 'test@example.test', 'accountId': 'sha256:' + mod.hashlib.sha256(b'account-fixture').hexdigest()[:16]})
+            mod.atomic_json(profile / 'auth.json', {})
+            usage = {'accountId': 'account-fixture', 'rateLimitsByLimitId': {'codex': {'secondary': {'usedPercent': 100, 'windowDurationMins': 10080, 'resetsAt': mod.time.time() + 300}}}, 'rateLimitResetCredits': {'availableCount': 1, 'credits': [{'id': 'expired', 'status': 'available', 'resetType': 'codexRateLimits', 'expiresAt': mod.time.time() - 1}]}}
+            def rpc(method, params):
+                if method == 'account/read':
+                    return {'account': {'type': 'chatgpt', 'email': 'test@example.test'}}
+                if method == 'account/rateLimits/read':
+                    return usage
+                self.fail('ineligible fixture must not consume')
+            @contextlib.contextmanager
+            def session(_, **kwargs):
+                yield SimpleNamespace(request=rpc)
+            with patch.object(backend, 'reset_session', side_effect=session):
+                self.assertFalse(backend.reset_status('codex', 'test')['eligible'])
+                usage['rateLimitResetCredits']['credits'] = None
+                self.assertTrue(backend.reset_status('codex', 'test')['eligible'])
+                usage['rateLimitsByLimitId'] = {'codex_other': usage['rateLimitsByLimitId']['codex']}
+                self.assertFalse(backend.reset_status('codex', 'test')['eligible'])
+
     def test_backend_exists(self):
         self.assertTrue(SOURCE.exists(), 'portable backend is not implemented')
 

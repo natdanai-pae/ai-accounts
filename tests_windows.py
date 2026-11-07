@@ -3,6 +3,67 @@ import unittest
 from datetime import datetime, timezone, timedelta
 
 class WindowsTests(unittest.TestCase):
+    def test_missing_primary_uses_full_width_weekly_and_explicit_reason(self):
+        from windows_gui import quota_lanes, recommendation_reason, provider_winner
+        now = datetime(2026, 11, 7, tzinfo=timezone.utc)
+        account = {'id': 'codex:main', 'provider': 'codex', 'key': 'main'}
+        usage = {'updatedAt': now.isoformat(), 'secondary': {'usedPercent': 20, 'resetsAt': (now+timedelta(hours=2)).isoformat()}}
+        for value in (usage, dict(usage, primary=None)):
+            self.assertEqual(quota_lanes(value), [('secondary', 'รายสัปดาห์')])
+            winner = provider_winner([account], {account['id']: value}, 'codex', now)
+            self.assertEqual(winner, account)
+            self.assertIn('รายสัปดาห์เท่านั้น', recommendation_reason([account], {account['id']: value}, winner, {account['id']: 1}, now))
+        self.assertEqual(len(quota_lanes(dict(usage, primary={'usedPercent': None}))), 2)
+
+    def test_reset_requires_confirmation_and_fresh_eligible_status(self):
+        from windows_gui import reset_command
+        account = {'provider': 'codex', 'key': 'main', 'email': 'fixture@example.invalid'}
+        status = {'ok': True, 'supported': True, 'eligible': True, 'availableCount': 1, 'accountEmail': account['email'], 'uncertain': False}
+        self.assertEqual(reset_command(account, status, True, False), ['reset', 'codex', 'main', '--confirmed'])
+        self.assertIsNone(reset_command(account, status, False, False))
+        self.assertIsNone(reset_command(account, status, True, True))
+        for field, value in [('eligible', False), ('supported', False), ('availableCount', 0), ('accountEmail', 'other@example.invalid'), ('uncertain', True)]:
+            self.assertIsNone(reset_command(account, dict(status, **{field: value}), True, False))
+        self.assertIsNone(reset_command(dict(account, provider='claude'), status, True, False))
+
+    def test_uncertain_reset_reuses_verified_eligible_attempt(self):
+        from windows_gui import reset_command
+        account = {'provider': 'codex', 'key': 'main', 'email': 'fixture@example.invalid'}
+        status = {'ok': True, 'supported': True, 'eligible': True, 'availableCount': 1, 'accountEmail': account['email'], 'uncertain': True, 'attemptId': '2b8e9aa7-cf1c-4d34-8208-3f5162c72631'}
+        self.assertEqual(reset_command(account, status, True, False), ['reset', 'codex', 'main', '--confirmed'])
+        for attempt in (None, '', 'invalid', '../attempt'):
+            self.assertIsNone(reset_command(account, dict(status, attemptId=attempt), True, False))
+        self.assertIsNone(reset_command(account, dict(status, eligible=False), True, False))
+        self.assertIsNone(reset_command(account, dict(status, accountEmail='other@example.invalid'), True, False))
+        self.assertIsNone(reset_command(account, status, False, False))
+
+    def test_reset_reasons_are_short_thai(self):
+        from windows_gui import reset_reason
+        self.assertIn('10%', reset_reason({'reason': 'Core 5h or weekly remaining must be <=10%'}))
+        self.assertIn('ไม่มีสิทธิ์', reset_reason({'reason': 'No available free reset credit'}))
+        self.assertIn('คำขอเดิม', reset_reason({'uncertain': True, 'reason': 'Previous result remains uncertain'}))
+        self.assertEqual(reset_reason({'reason': 'Unknown lengthy upstream English message'}), 'ตรวจสิทธิ์ไม่ได้ · ดูรายละเอียด')
+
+    def test_v5_prefers_ready_account_before_weekly_reset_priority(self):
+        from windows_gui import provider_winner, recommendation_reason
+        now = datetime(2026, 11, 7, tzinfo=timezone.utc)
+        accounts = [{'id': f'codex:{key}', 'provider': 'codex', 'key': key} for key in ('main', 'account2')]
+        def usage(primary, week, hours):
+            return {'updatedAt': now.isoformat(), 'primary': {'usedPercent': 100-primary, 'resetsAt': (now+timedelta(hours=1)).isoformat()}, 'secondary': {'usedPercent': 100-week, 'resetsAt': (now+timedelta(hours=hours)).isoformat()}}
+        values = {'codex:main': usage(5, 80, 1), 'codex:account2': usage(20, 10, 10)}
+        winner = provider_winner(accounts, values, 'codex', now)
+        self.assertEqual(winner['id'], 'codex:account2')
+        reason = recommendation_reason(accounts, values, winner, {'codex:main': 1, 'codex:account2': 2}, now)
+        self.assertIn('บัญชี 1', reason)
+        self.assertIn('ใกล้หมด', reason)
+        values['codex:main'] = usage(20, 80, 1)
+        self.assertEqual(provider_winner(accounts, values, 'codex', now)['id'], 'codex:main')
+        values['codex:main'] = usage(19, 80, 1)
+        values['codex:account2'] = usage(19, 80, 2)
+        self.assertEqual(provider_winner(accounts, values, 'codex', now)['id'], 'codex:main')
+        values['codex:main']['updatedAt'] = (now-timedelta(minutes=16)).isoformat()
+        self.assertEqual(provider_winner(accounts, values, 'codex', now)['id'], 'codex:account2')
+
     def test_fresh_custom_account_starts_at_one(self):
         from windows_gui import stable_numbers
         first = {'id': 'codex:custom-id', 'provider': 'codex', 'key': 'custom-id'}
@@ -105,7 +166,7 @@ class WindowsTests(unittest.TestCase):
         usage['primary'] = {'usedPercent': None}
         self.assertIsNone(recommendation(usage, now)[0])
         usage['primary'] = {'usedPercent': 90, 'resetsAt': (now + timedelta(hours=1)).isoformat()}
-        self.assertEqual(recommendation(usage, now)[0], 10)
+        self.assertEqual(recommendation(usage, now)[0], 50)
 
     def test_many_accounts_identity_and_partial_failures(self):
         from windows_gui import match_usage, parse_accounts
