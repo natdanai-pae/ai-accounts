@@ -217,7 +217,7 @@ def main():
     dpi = system_dpi()
     dp = lambda value: scaled_pixels(value, dpi)
     import tkinter as tk
-    from tkinter import ttk, messagebox, simpledialog
+    from tkinter import ttk, messagebox
     root = tk.Tk()
     root.tk.call('tk', 'scaling', dpi / 72)
     root.title('AI Accounts • Windows beta')
@@ -406,9 +406,8 @@ def main():
             return
         if state['busy']:
             return
-        label = simpledialog.askstring('เพิ่มบัญชี ' + provider.title(), 'ชื่อบัญชี (ขั้นต่อไปจะเปิดหน้าต่างเข้าสู่ระบบตามปกติ):', parent=root)
-        if label:
-            work(['add', provider, label])
+        number = max((n for key, n in preferences['numbers'].items() if key.startswith(provider + ':')), default=0) + 1
+        work(['add', provider, provider.title() + ' ' + str(number)])
 
     def request_reset(account):
         if synthetic:
