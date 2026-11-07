@@ -2,7 +2,7 @@
 
 Desktop beta for managing multiple Codex and Claude accounts, inspecting quota, and choosing a provider-specific recommendation without automatic switching.
 
-**[Download macOS / Windows beta](https://github.com/natdanai-pae/ai-accounts/releases/tag/v0.3.0-beta.1)**
+**Downloads temporarily paused:** the initial beta has been returned to draft while account numbering, recommendations and notification UX are being revised. Source remains available; this revision is not yet approved for distribution.
 
 **[คู่มือติดตั้งและใช้งานภาษาไทย — macOS / Windows](README-TH.md)**
 
