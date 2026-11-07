@@ -3,6 +3,26 @@ import unittest
 from datetime import datetime, timezone, timedelta
 
 class WindowsTests(unittest.TestCase):
+    def test_add_claude_finds_registered_windows_package(self):
+        import tempfile, json
+        from pathlib import Path
+        from unittest.mock import patch, Mock
+        from windows_backend import WindowsBackend
+        with tempfile.TemporaryDirectory() as home:
+            backend = WindowsBackend(root=home)
+            package = Path(home) / 'WindowsApps/Claude'
+            app = package / 'app/Claude.exe'
+            app.parent.mkdir(parents=True)
+            app.touch()
+            result = Mock(returncode=0, stdout=json.dumps(str(package)).encode())
+            with patch('windows_backend.subprocess.run', return_value=result), patch('windows_backend.subprocess.Popen') as launch:
+                self.assertTrue(backend.list_accounts()['dependencies']['claudeApp'])
+                backend.add('claude', 'Account 1')
+                args = launch.call_args.args[0]
+                self.assertEqual(args[0], str(app))
+                self.assertTrue(args[1].startswith('--user-data-dir='))
+                self.assertEqual(len(backend.config()['profiles']), 1)
+
     def test_system_dpi_awareness_and_scaled_dimensions(self):
         from unittest.mock import Mock
         from windows_gui import system_dpi, scaled_pixels

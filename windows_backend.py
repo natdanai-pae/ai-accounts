@@ -77,8 +77,33 @@ class WindowsBackend(Backend):
     def list_accounts(self):
         result = super().list_accounts()
         result['platform'] = 'Windows x64 beta'
-        result['dependencies'] = {'claudeApp': (self.local / 'AnthropicClaude/claude.exe').is_file(), 'codexApp': (self.local / 'Microsoft/WindowsApps/codex.exe').is_file()}
+        result['dependencies'] = {'claudeApp': self.claude_app() is not None, 'codexApp': (self.local / 'Microsoft/WindowsApps/codex.exe').is_file()}
         return result
+
+    def claude_app(self):
+        legacy = self.local / 'AnthropicClaude/claude.exe'
+        if legacy.is_file():
+            return legacy
+        # Resolve the current user's registered package, so Store updates do not stale the path.
+        script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-AppxPackage -Name Claude | Where-Object {$_.PackageFamilyName -eq 'Claude_pzs8sxrjxfjjc'} | Select-Object -First 1 -ExpandProperty InstallLocation | ConvertTo-Json -Compress"
+        try:
+            result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            location = json.loads(result.stdout.decode('utf-8-sig')) if result.returncode == 0 else None
+            if isinstance(location, str) and Path(location).is_absolute():
+                app = Path(location) / 'app/Claude.exe'
+                if app.is_file():
+                    return app
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+        return None
+
+    def claude_modules(self):
+        switcher = super().claude_modules()
+        app = self.claude_app()
+        if app is None:
+            raise SafeError('Install the official Claude desktop app first')
+        switcher.C.APP = str(app)
+        return switcher
 
     def executable(self, name):
         path = self.resources / 'bin' / (name + '.exe')
@@ -105,8 +130,8 @@ class WindowsBackend(Backend):
             return super().add(provider, label)
         if not isinstance(label, str) or not label.strip() or len(label) > 120 or any(ord(c) < 32 for c in label):
             raise SafeError('Enter an account label of 1–120 characters')
-        app = self.local / 'AnthropicClaude/claude.exe'
-        if not app.is_file():
+        app = self.claude_app()
+        if app is None:
             raise SafeError('Install the official Claude desktop app first')
         key = str(uuid.uuid4())
         profile = self.roaming / ('Claude AI Accounts ' + key)
