@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+[[ "$(uname -m)" == arm64 ]] || { echo 'This package targets macOS Apple Silicon; use an arm64 builder.' >&2; exit 1; }
 source_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 release_dir="${1:-$source_dir/dist}"
 build_dir="$(mktemp -d /tmp/ai-accounts-release.XXXXXX)"
@@ -37,7 +38,8 @@ else
   tar -xzf "$build_dir/codex.tar.gz" -C "$build_dir/codex-cli"
   cp "$build_dir/codex-cli/codex-aarch64-apple-darwin" "$resources/bin/codex"
 fi
-if [[ -x /Applications/CodexBar.app/Contents/Helpers/CodexBarCLI ]]; then
+local_codexbar_version="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' /Applications/CodexBar.app/Contents/Info.plist 2>/dev/null || true)"
+if [[ -x /Applications/CodexBar.app/Contents/Helpers/CodexBarCLI && "$local_codexbar_version" == 0.84.0 ]]; then
   cp -R /Applications/CodexBar.app/Contents/Helpers "$resources/codexbar/Helpers"
 else
   curl -fsSL https://github.com/steipete/CodexBar/releases/download/v0.84.0/CodexBarCLI-v0.84.0-macos-arm64.tar.gz -o "$build_dir/CodexBarCLI.tar.gz"
