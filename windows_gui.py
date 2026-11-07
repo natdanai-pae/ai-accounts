@@ -295,12 +295,12 @@ def main():
         ribbons[provider] = ribbon
         canvas = tk.Canvas(pane, highlightthickness=0, width=350, background=colors['base'])
         scroll = ttk.Scrollbar(pane, orient='vertical', command=canvas.yview)
-        def update_scroll(first, last, bar=scroll):
+        def update_scroll(first, last, bar=scroll, surface=canvas):
             bar.set(first, last)
             if float(first) <= 0 and float(last) >= 1:
                 bar.pack_forget()
             elif not bar.winfo_manager():
-                bar.pack(side='right', fill='y')
+                bar.pack(side='right', fill='y', before=surface)
         canvas.configure(yscrollcommand=update_scroll)
         canvas.pack(fill='both', expand=True)
         rows = ttk.Frame(canvas)
