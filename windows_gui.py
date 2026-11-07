@@ -514,12 +514,11 @@ def main():
                 row.pack(fill='x', pady=dp((0, 8)))
                 top = ttk.Frame(row, style='Card.TFrame')
                 top.pack(fill='x')
-                label = str(account.get('label') or account['key'])
-                label = label[:18] + '…' if len(label) > 19 else label
+                label = account.get('email') or 'รอเข้าสู่ระบบ'
                 tk.Label(top, text=str(preferences['numbers'][account['id']]), font=('Segoe UI', 22, 'bold'), background=colors['tint'], foreground=colors['teal'], width=2).pack(side='left', padx=dp((0, 10)))
                 identity = ttk.Frame(top, style='Card.TFrame')
                 identity.pack(side='left', fill='x', expand=True)
-                ttk.Label(identity, text=label, style='Card.TLabel', font=('Leelawadee UI', 11, 'bold')).pack(anchor='w')
+                ttk.Label(identity, text=label, style='Card.TLabel', wraplength=dp(230), font=('Leelawadee UI', 10, 'bold')).pack(anchor='w')
                 ttk.Label(identity, text='แนะนำให้ใช้ตอนนี้' if winner and winner['id'] == account['id'] else 'บัญชี ' + str(preferences['numbers'][account['id']]), style='CardMuted.TLabel', font=('Leelawadee UI', 9)).pack(anchor='w')
                 ttk.Button(top, text='ใช้บัญชีนี้', style='Accent.TButton', command=lambda a=account: switch(a)).pack(side='right')
                 lanes = ttk.Frame(row, style='Card.TFrame')
