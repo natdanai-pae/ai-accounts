@@ -31,7 +31,10 @@ Copy-Item "$source/vendor/licenses/*" "$payload/licenses/"
 Copy-Item "$source/THIRD-PARTY-NOTICES.md", "$source/README-TH.md" $payload
 & "$payload/backend/aiaccounts-helper.exe" --self-test
 Check-Exit
-$smoke = Start-Process -FilePath "$payload/AI Accounts.exe" -ArgumentList '--self-test' -Wait -PassThru
+$smoke = Start-Process -FilePath "$payload/AI Accounts.exe" -ArgumentList '--self-test' -PassThru
+if (-not $smoke.WaitForExit(60000)) { Stop-Process -Id $smoke.Id; throw 'Windows GUI smoke timed out after 60 seconds' }
+$smoke.Refresh()
+if (Test-Path "$payload/ai-accounts-selftest-error.log") { Get-Content "$payload/ai-accounts-selftest-error.log" }
 if ($smoke.ExitCode -ne 0) { throw 'Windows GUI smoke failed' }
 Get-ChildItem -Recurse -File $payload | ForEach-Object { (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() + '  ' + $_.FullName.Substring($payload.Length + 1) } | Set-Content "$payload/DEPENDENCY-SHA256SUMS" -Encoding utf8
 $zip = Join-Path $dist 'AI-Accounts-0.3.0-windows-x64.zip'

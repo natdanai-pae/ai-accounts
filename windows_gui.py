@@ -613,4 +613,12 @@ def main():
     root.mainloop()
 
 if __name__ == '__main__':
-    main()
+    if '--self-test' in sys.argv:
+        try:
+            main()
+        except Exception:
+            import traceback
+            Path(sys.executable).with_name('ai-accounts-selftest-error.log').write_text(traceback.format_exc(), encoding='utf-8')
+            sys.exit(1)
+    else:
+        main()
