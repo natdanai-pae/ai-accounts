@@ -488,8 +488,8 @@ def main():
                 ttk.Button(empty, text='+ เพิ่มบัญชีแรก', style='Accent.TButton', command=lambda p=provider: add(p)).pack(anchor='w')
             for account in accounts:
                 usage = values.get(account['id'])
-                row = ttk.Frame(panel, padding=(12, 10), style='Card.TFrame')
-                row.pack(fill='x', pady=(0, 10))
+                row = ttk.Frame(panel, padding=(12, 7), style='Card.TFrame')
+                row.pack(fill='x', pady=(0, 8))
                 top = ttk.Frame(row, style='Card.TFrame')
                 top.pack(fill='x')
                 label = str(account.get('label') or account['key'])
@@ -501,7 +501,7 @@ def main():
                 ttk.Label(identity, text='แนะนำให้ใช้ตอนนี้' if winner and winner['id'] == account['id'] else 'บัญชี ' + str(preferences['numbers'][account['id']]), style='CardMuted.TLabel', font=('Leelawadee UI', 9)).pack(anchor='w')
                 ttk.Button(top, text='ใช้บัญชีนี้', style='Accent.TButton', command=lambda a=account: switch(a)).pack(side='right')
                 lanes = ttk.Frame(row, style='Card.TFrame')
-                lanes.pack(fill='x', pady=(8, 4))
+                lanes.pack(fill='x', pady=(6, 2))
                 lane_items = quota_lanes(usage)
                 for index, (key, label) in enumerate(lane_items):
                     cell = ttk.Frame(lanes, style='Card.TFrame')
