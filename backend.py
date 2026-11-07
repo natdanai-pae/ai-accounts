@@ -551,7 +551,7 @@ def main(args):
     with lock(backend.state / 'operation.lock'):
         if len(args) == 4 and args[0] == 'reset' and args[3] == '--confirmed':
             return backend.reset_account(args[1], args[2], True)
-        if len(args) == 3 and args[0] in ('add', 'switch'):
+        if len(args) == 3 and args[0] in ('add', 'switch', 'login') and hasattr(backend, args[0]):
             message = getattr(backend, args[0])(*args[1:])
         elif args == ['connect']:
             message = backend.connect()
@@ -567,6 +567,8 @@ def main(args):
     return {'ok': True, 'message': message}
 
 if __name__ == '__main__':
+    # Windows adapters must share this entrypoint's SafeError type when frozen.
+    sys.modules.setdefault('backend', sys.modules[__name__])
     os.umask(0o077)
     try:
         print(json.dumps(main(sys.argv[1:]), ensure_ascii=False))

@@ -3,6 +3,62 @@ import unittest
 from datetime import datetime, timezone, timedelta
 
 class WindowsTests(unittest.TestCase):
+    def test_resume_claude_login_preserves_profiles_and_refuses_active_work(self):
+        import tempfile
+        from unittest.mock import Mock, patch
+        from windows_backend import WindowsBackend
+        from backend import atomic_json, SafeError
+        with tempfile.TemporaryDirectory() as home:
+            backend = WindowsBackend(root=home)
+            for key in ('a', 'b'):
+                (backend.roaming / key).mkdir(parents=True)
+            conf = {'profiles': {k: {'label': k, 'data_dir': str(backend.roaming / k)} for k in ('a', 'b')}, 'sync_dirs': []}
+            atomic_json(backend.claude_config, conf)
+            switcher = Mock()
+            switcher.running.return_value = {'a': 123}
+            switcher.busy_sessions.return_value = 1
+            with patch.object(backend, 'claude_modules', return_value=switcher):
+                with self.assertRaises(SafeError):
+                    backend.login('claude', 'b')
+                switcher.quit_app.assert_not_called()
+                switcher.busy_sessions.return_value = 0
+                switcher.quit_app.return_value = True
+                backend.login('claude', 'b')
+                self.assertEqual(backend.config(), conf)
+                switcher.launch.assert_called_once_with(conf, 'b')
+
+    def test_three_selection_modes_and_limiting_reset_protection(self):
+        from windows_gui import provider_winner, reset_wait_reason
+        now = datetime(2026, 11, 7, tzinfo=timezone.utc)
+        accounts = [{'id': 'codex:' + k, 'provider': 'codex', 'key': k} for k in ('a', 'b', 'c')]
+        numbers = {'codex:a': 1, 'codex:b': 2, 'codex:c': 3}
+        def usage(left, hours):
+            return {'updatedAt': now.isoformat(), 'secondary': {'usedPercent': 100-left, 'resetsAt': (now+timedelta(hours=hours)).isoformat()}}
+        values = {'codex:a': usage(40, 100), 'codex:b': usage(90, 100), 'codex:c': usage(60, 2)}
+        for mode, expected in [('sequential', 'a'), ('balance', 'b'), ('rate', 'c')]:
+            self.assertEqual(provider_winner(accounts, values, 'codex', now, mode, numbers)['key'], expected)
+        exhausted = usage(0, 2)
+        self.assertTrue(reset_wait_reason(exhausted, now, 24))
+        self.assertIsNone(reset_wait_reason(exhausted, now, 1))
+        exhausted['primary'] = {'usedPercent': 20, 'resetsAt': (now+timedelta(minutes=30)).isoformat()}
+        exhausted['secondary']['resetsAt'] = (now+timedelta(days=5)).isoformat()
+        self.assertIsNone(reset_wait_reason(exhausted, now, 24), 'short primary reset must not hide exhausted long weekly window')
+
+    def test_usage_threshold_fires_once_per_window_even_when_exhausted(self):
+        from windows_gui import alert_policy
+        now = datetime(2026, 11, 7, tzinfo=timezone.utc)
+        account = {'id': 'codex:a', 'provider': 'codex', 'key': 'a'}
+        usage = {'updatedAt': now.isoformat(), 'secondary': {'usedPercent': 49, 'resetsAt': (now+timedelta(days=1)).isoformat()}}
+        state, alerts = alert_policy({}, [account], {account['id']: usage}, now, True)
+        self.assertEqual(alerts, [])
+        usage['secondary']['usedPercent'] = 50
+        state, alerts = alert_policy(state, [account], {account['id']: usage}, now, True)
+        self.assertEqual(alerts[0]['kind'], 'usage')
+        usage['secondary']['usedPercent'] = 100
+        self.assertEqual(alert_policy(state, [account], {account['id']: usage}, now, True)[1], [])
+        self.assertEqual(alert_policy({}, [account], {account['id']: usage}, now, True)[1][0]['kind'], 'usage')
+        self.assertEqual(alert_policy({}, [account], {account['id']: usage}, now+timedelta(minutes=16), True)[1], [])
+
     def test_switcher_recognizes_store_desktop_but_not_code_cli_or_renderer(self):
         import sys
         from pathlib import Path
@@ -168,7 +224,9 @@ class WindowsTests(unittest.TestCase):
         self.assertEqual(len({expanded[a['id']] for a in many}), 54)
 
     def test_alert_baseline_change_cooldown_restart_and_errors(self):
-        from windows_gui import alert_policy
+        from windows_gui import alert_policy as full_alert_policy
+        def alert_policy(*args):
+            return full_alert_policy(*args, usage_threshold=None)
         now = datetime(2026, 11, 7, tzinfo=timezone.utc)
         accounts = [{'id': f'codex:{key}', 'provider': 'codex', 'key': key} for key in ['main', 'account2']]
         def usage(used, time=now):
@@ -197,7 +255,9 @@ class WindowsTests(unittest.TestCase):
         self.assertEqual(alerts, [])
 
     def test_near_reset_dedup_stale_exhausted_and_sleep(self):
-        from windows_gui import alert_policy, refresh_due
+        from windows_gui import alert_policy as full_alert_policy, refresh_due
+        def alert_policy(*args):
+            return full_alert_policy(*args, usage_threshold=None)
         now = datetime(2026, 11, 7, tzinfo=timezone.utc)
         account = {'id': 'claude:a', 'provider': 'claude', 'key': 'a'}
         usage = {'updatedAt': now.isoformat(), 'secondary': {'usedPercent': 20, 'resetsAt': (now + timedelta(minutes=45)).isoformat()}}

@@ -103,11 +103,40 @@ def stable_numbers(accounts, saved):
 def ordered_accounts(accounts, mapping):
     return sorted(accounts, key=lambda a: (a['provider'], mapping[a['id']], a['id']))
 
-def provider_winner(accounts, values, provider, now=None):
+def provider_winner(accounts, values, provider, now=None, strategy='rate', numbers=None):
+    now = now or datetime.now(timezone.utc)
+    numbers = numbers or stable_numbers(accounts, {})
     eligible = [(a, recommendation(values[a['id']], now)[0]) for a in accounts if a['provider'] == provider and values.get(a['id'])]
     eligible = [(a, score) for a, score in eligible if score is not None]
+    if not eligible:
+        return None
+    order = lambda a: (numbers[a['id']], a['id'])
+    if strategy == 'sequential':
+        return min((a for a, _ in eligible), key=order)
+    if strategy == 'balance':
+        return min((a for a, _ in eligible), key=lambda a: (-min(100-w['usedPercent'] for _, w in valid_windows(values[a['id']], now)), order(a)))
     ready = [(a, score) for a, score in eligible if ready_quota(values[a['id']])]
-    return sorted(ready or eligible, key=lambda item: (-item[1], item[0]['id']))[0][0] if eligible else None
+    def pace(a):
+        return min((100-w['usedPercent']) / max((date(w['resetsAt'])-now).total_seconds()/3600, 1/60) for _, w in valid_windows(values[a['id']], now))
+    return min((a for a, _ in ready or eligible), key=lambda a: (-pace(a), order(a)))
+
+def valid_windows(usage, now):
+    updated = date((usage or {}).get('updatedAt'))
+    if not usage or usage.get('error') or not updated or not 0 <= (now-updated).total_seconds() <= 900:
+        return []
+    return [(name, window) for name in ('primary', 'secondary') if isinstance((window := usage.get(name)), dict)
+            and number(window.get('usedPercent')) and 0 <= window['usedPercent'] <= 100
+            and date(window.get('resetsAt')) and date(window['resetsAt']) > now]
+
+def reset_wait_reason(usage, now=None, hours=48):
+    now = now or datetime.now(timezone.utc)
+    windows = valid_windows(usage, now)
+    if not windows or not any(name == 'secondary' for name, _ in windows) or len(windows) != (2 if (usage or {}).get('primary') is not None else 1):
+        return 'รอข้อมูลโควตาใหม่ก่อนใช้สิทธิ์'
+    name, window = max(windows, key=lambda item: (item[1]['usedPercent'], date(item[1]['resetsAt'])))
+    if (date(window['resetsAt'])-now).total_seconds() <= hours*3600:
+        return ('รอบหลัก' if name == 'primary' else 'รายสัปดาห์') + f'จะรีเซ็ตภายใน {hours} ชม. · เก็บสิทธิ์รีเซ็ตฟรีไว้ก่อน'
+    return None
 
 def ready_quota(usage):
     return 100 - usage['secondary']['usedPercent'] >= 10 and (usage.get('primary') is None or 100 - usage['primary']['usedPercent'] >= 20)
@@ -115,9 +144,13 @@ def ready_quota(usage):
 def quota_lanes(usage):
     return [('primary', 'รอบหลัก'), ('secondary', 'รายสัปดาห์')] if (usage or {}).get('primary') is not None else [('secondary', 'รายสัปดาห์')]
 
-def recommendation_reason(accounts, values, winner, numbers, now=None):
+def recommendation_reason(accounts, values, winner, numbers, now=None, strategy='rate'):
     usage = values[winner['id']]
     suffix = ' • ประเมินจากรายสัปดาห์เท่านั้น' if usage.get('primary') is None else ''
+    if strategy == 'sequential':
+        return 'ใช้บัญชีตามลำดับ · ข้ามบัญชีที่หมดโควตาหรือข้อมูลไม่พร้อม' + suffix
+    if strategy == 'balance':
+        return 'กระจายการใช้ · เลือกบัญชีที่โควตารอบที่เหลือน้อยที่สุดยังเหลือมากกว่า' + suffix
     others = [a for a in accounts if a['provider'] == winner['provider'] and a['id'] != winner['id'] and values.get(a['id']) and recommendation(values[a['id']], now)[0] is not None]
     limited = next((a for a in others if not ready_quota(values[a['id']])), None)
     if ready_quota(usage) and limited:
@@ -126,26 +159,35 @@ def recommendation_reason(accounts, values, winner, numbers, now=None):
         return 'ทุกบัญชีเหลือน้อย: บัญชีนี้ควรใช้ก่อนรอบสัปดาห์รีเซ็ต' + suffix
     if others:
         other = sorted(others, key=lambda a: numbers[a['id']])[0]
-        return f'ควรใช้โควตาก่อนรีเซ็ตมากกว่าบัญชี {numbers[other["id"]]} ซึ่งเก็บไว้ใช้ต่อได้' + suffix
+        return f'โควตาต่อเวลาถึงรีเซ็ตของรอบที่จำกัด เหมาะกว่าบัญชี {numbers[other["id"]]}' + suffix
     return 'บัญชีนี้มีโควตาพร้อมใช้ และข้อมูลล่าสุดตรวจสอบได้' + suffix
 
-def alert_policy(saved, accounts, values, now, enabled):
+def alert_policy(saved, accounts, values, now, enabled, strategy='rate', numbers=None, usage_threshold=50):
     stamp = now.timestamp()
     state = {'winners': dict(saved.get('winners', {})), 'lastAlert': dict(saved.get('lastAlert', {})),
+             'pending': dict(saved.get('pending', {})) if isinstance(saved.get('pending', {}), dict) else {},
              'events': {k: v for k, v in saved.get('events', {}).items() if number(v) and v > stamp}}
     alerts = []
     for provider in ('codex', 'claude'):
-        winner = provider_winner(accounts, values, provider, now)
-        if not winner:
-            continue  # Failed/stale refresh never erases the last valid recommendation.
-        previous = state['winners'].get(provider)
-        state['winners'][provider] = winner['id']
+        winner = provider_winner(accounts, values, provider, now, strategy, numbers)
         candidates = []
-        if previous and previous != winner['id']:
-            candidates.append({'kind': 'winner', 'provider': provider, 'account': winner['id'], 'key': 'winner:' + winner['id'], 'expires': stamp + 86400})
+        if winner:
+            previous = state['winners'].get(provider)
+            state['winners'][provider] = winner['id']
+            if previous and previous != winner['id']:
+                state['pending'][provider] = {'kind': 'winner', 'provider': provider, 'account': winner['id'], 'key': 'winner:' + winner['id'] + ':' + str(stamp), 'expires': stamp + 86400}
+            pending = state['pending'].get(provider)
+            if isinstance(pending, dict) and pending.get('account') == winner['id'] and number(pending.get('expires')) and pending['expires'] > stamp and pending.get('kind') == 'winner' and isinstance(pending.get('key'), str):
+                candidates.append(pending)
         for account in ordered_accounts(accounts, stable_numbers(accounts, {})):
             usage = values.get(account['id'])
-            if account['provider'] != provider or not usage or recommendation(usage, now)[0] is None:
+            if account['provider'] != provider:
+                continue
+            for name, window in valid_windows(usage, now):
+                if usage_threshold is not None and window['usedPercent'] >= usage_threshold:
+                    reset = date(window['resetsAt'])
+                    candidates.append({'kind': 'usage', 'provider': provider, 'account': account['id'], 'window': name, 'used': window['usedPercent'], 'key': 'usage:' + account['id'] + ':' + name + ':' + reset.isoformat(), 'expires': reset.timestamp()})
+            if not usage or recommendation(usage, now)[0] is None:
                 continue
             names = ('secondary', 'primary') if usage.get('primary') is not None else ('secondary',)
             limiting = min(names, key=lambda name: (100 - usage[name]['usedPercent']) / max((date(usage[name]['resetsAt']) - now).total_seconds(), 60))
@@ -153,11 +195,15 @@ def alert_policy(saved, accounts, values, now, enabled):
             if 0 < (reset - now).total_seconds() <= 3600:
                 candidates.append({'kind': 'reset', 'provider': provider, 'account': account['id'], 'key': 'reset:' + account['id'] + ':' + reset.isoformat(), 'expires': reset.timestamp()})
         last = state['lastAlert'].get(provider)
-        if not enabled or (number(last) and stamp - last < 1800):
+        unseen = [event for event in candidates if event['key'] not in state['events']]
+        if not enabled or (number(last) and stamp - last < 1800 and not any(e['kind'] == 'usage' for e in unseen)):
             continue
-        candidate = next((event for event in candidates if event['key'] not in state['events']), None)
-        if candidate:
-            state['events'][candidate['key']] = candidate['expires']
+        if unseen:
+            candidate = dict(unseen[0], also=unseen[1:])
+            for event in unseen:
+                state['events'][event['key']] = event['expires']
+                if event['kind'] == 'winner':
+                    state['pending'].pop(provider, None)
             state['lastAlert'][provider] = stamp
             alerts.append(candidate)
     return state, alerts
@@ -264,7 +310,7 @@ def main():
     state = {'busy': False, 'accounts': [], 'usage': {}, 'resetStatuses': {}, 'lastRefresh': 0, 'lastPaint': 0}
     private_dir = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / 'AppData/Local'))) / 'AI Accounts'
     preferences_path = private_dir / 'ui-preferences.json'
-    preferences = {'numbers': {}, 'alerts': {}, 'notifications': False}
+    preferences = {'numbers': {}, 'alerts': {}, 'notifications': False, 'strategy': 'rate', 'avoidResetHours': 48}
     try:
         from backend import read_json
         if preferences_path.is_symlink():
@@ -275,6 +321,10 @@ def main():
         if isinstance(loaded.get('alerts'), dict) and all(isinstance(loaded['alerts'].get(k, {}), dict) for k in ('winners', 'events', 'lastAlert')):
             preferences['alerts'] = loaded['alerts']
         preferences['notifications'] = loaded.get('notifications') is True
+        if loaded.get('strategy') in ('sequential', 'balance', 'rate'):
+            preferences['strategy'] = loaded['strategy']
+        if loaded.get('avoidResetHours') in (1, 6, 24, 48):
+            preferences['avoidResetHours'] = loaded['avoidResetHours']
     except Exception:
         pass
     notifications = tk.BooleanVar(value=preferences['notifications'])
@@ -361,6 +411,7 @@ def main():
             status.set('ข้อมูลจำลองเท่านั้น • ไม่มีการเรียกผู้ให้บริการ')
             return
         if state['busy']:
+            status.set('กำลังทำรายการก่อนหน้าอยู่ · รอผลก่อนเริ่มรายการใหม่')
             return
         state['busy'] = True
         state['lastRefresh'] = time.time()
@@ -384,9 +435,10 @@ def main():
                         return account['id'], {'supported': False, 'reason': 'อ่านสิทธิ์รีเซ็ตไม่สำเร็จ'}
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     usage['_resetStatuses'] = dict(pool.map(reset_status, [a for a in accounts if a['provider'] == 'codex']))
-                events.put((accounts, usage, {'text': 'อัปเดตล่าสุด ' + datetime.now().strftime('%H:%M') + ' • ' + str(len(accounts)) + ' บัญชี', 'details': result.get('message', '') if isinstance(result, dict) else ''}))
+                message = result.get('message', '') if isinstance(result, dict) else ''
+                events.put((accounts, usage, {'text': message if args[0] in ('login', 'connect') and message else 'อัปเดตล่าสุด ' + datetime.now().strftime('%H:%M') + ' • ' + str(len(accounts)) + ' บัญชี', 'details': message}))
             except RuntimeError as error:
-                events.put((None, None, {'text': 'ยังยืนยันผลรีเซ็ตไม่ได้ • คลิกเพื่อดูรายละเอียด' if args[0] == 'reset' else 'ทำรายการไม่สำเร็จ • คลิกเพื่อดูรายละเอียด', 'details': str(error)}))
+                events.put((None, None, {'text': 'ยังยืนยันผลรีเซ็ตไม่ได้ • คลิกเพื่อดูรายละเอียด' if args[0] == 'reset' else 'ทำรายการไม่สำเร็จ • คลิกเพื่อดูรายละเอียด', 'details': str(error), 'showError': args[0] not in ('list', 'sync')}))
             except Exception:
                 events.put((None, None, 'ตรวจการเข้าสู่ระบบและแอปผู้ให้บริการ แล้วลองอีกครั้ง'))
         threading.Thread(target=run, daemon=True).start()
@@ -396,6 +448,11 @@ def main():
             messagebox.showinfo('ตัวอย่าง', 'ตัวอย่างปุ่มสลับบัญชี • ไม่มีการสลับบัญชีจริง', parent=root)
             return
         if state['busy']:
+            status.set('กำลังทำรายการก่อนหน้าอยู่ · รอผลก่อนเริ่มรายการใหม่')
+            return
+        if account['provider'] == 'claude' and not account.get('email'):
+            if messagebox.askokcancel('เข้าสู่ระบบต่อ', 'จะปิดหน้าต่าง Claude บัญชีอื่นที่ไม่มีงานกำลังทำ เพื่อไม่ให้หน้าล็อกอินกลับผิดบัญชี\n\nเลือกเข้าสู่ระบบด้วยอีเมลในหน้าต่างที่เปิด แล้วเปิด Code หนึ่งครั้ง\nไม่มีการเพิ่มรายการบัญชีใหม่', parent=root):
+                work(['login', 'claude', account['key']])
             return
         if messagebox.askokcancel('สลับบัญชี', 'บันทึกงานก่อนสลับ และปิดหน้าต่าง Codex เองก่อนสลับ Codex\n\nสลับไป ' + account_title(account) + '?', parent=root):
             work(['switch', account['provider'], account['key']])
@@ -405,6 +462,7 @@ def main():
             messagebox.showinfo('ตัวอย่าง', 'เมื่อใช้งานจริง ปุ่มนี้จะเปิดขั้นตอนเข้าสู่ระบบของ ' + provider.title(), parent=root)
             return
         if state['busy']:
+            status.set('กำลังทำรายการก่อนหน้าอยู่ · รอผลก่อนเริ่มรายการใหม่')
             return
         number = max((n for key, n in preferences['numbers'].items() if key.startswith(provider + ':')), default=0) + 1
         work(['add', provider, provider.title() + ' ' + str(number)])
@@ -474,7 +532,7 @@ def main():
             for widget in panel.winfo_children():
                 widget.destroy()
             accounts = ordered_accounts([a for a in state['accounts'] if a['provider'] == provider], preferences['numbers'])
-            winner = provider_winner(accounts, values, provider)
+            winner = provider_winner(accounts, values, provider, strategy=preferences['strategy'], numbers=preferences['numbers'])
             ribbon = ribbons[provider]
             canvas = scroll_surfaces[0 if provider == 'codex' else 1][1]
             canvas.pack_configure(expand=bool(accounts), fill='both' if accounts else 'x')
@@ -492,7 +550,7 @@ def main():
                 heading.pack(fill='x')
                 ttk.Label(heading, text='แนะนำบัญชี ' + str(preferences['numbers'][winner['id']]), style='Ribbon.TLabel', font=('Leelawadee UI', 11, 'bold')).pack(side='left')
                 ttk.Label(heading, text=f'เหลือ {100-week["usedPercent"]:g}%', style='Ribbon.TLabel').pack(side='right')
-                reason_label = ttk.Label(ribbon, text=recommendation_reason(accounts, values, winner, preferences['numbers']), style='Ribbon.TLabel', wraplength=dp(370), font=('Leelawadee UI', 9))
+                reason_label = ttk.Label(ribbon, text=recommendation_reason(accounts, values, winner, preferences['numbers'], strategy=preferences['strategy']), style='Ribbon.TLabel', wraplength=dp(370), font=('Leelawadee UI', 9))
                 reason_label.pack(anchor='w', pady=dp((3, 0)), fill='x')
                 reason_label.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(dp(160), e.width)))
             else:
@@ -520,7 +578,7 @@ def main():
                 identity.pack(side='left', fill='x', expand=True)
                 ttk.Label(identity, text=label, style='Card.TLabel', wraplength=dp(230), font=('Leelawadee UI', 10, 'bold')).pack(anchor='w')
                 ttk.Label(identity, text='แนะนำให้ใช้ตอนนี้' if winner and winner['id'] == account['id'] else 'บัญชี ' + str(preferences['numbers'][account['id']]), style='CardMuted.TLabel', font=('Leelawadee UI', 9)).pack(anchor='w')
-                ttk.Button(top, text='ใช้บัญชีนี้', style='Accent.TButton', command=lambda a=account: switch(a)).pack(side='right')
+                ttk.Button(top, text='เข้าสู่ระบบต่อ' if provider == 'claude' and not account.get('email') else 'ใช้บัญชีนี้', style='Accent.TButton', command=lambda a=account: switch(a)).pack(side='right')
                 lanes = ttk.Frame(row, style='Card.TFrame')
                 lanes.pack(fill='x', pady=dp((6, 2)))
                 lane_items = quota_lanes(usage)
@@ -552,11 +610,12 @@ def main():
                     expiry = None
                 expiry_text = expiry.astimezone().strftime('%d/%m %H:%M') if expiry else 'ไม่ทราบ'
                 ttk.Label(reset_line, text='รีเซ็ตฟรี ' + (str(count) + ' ครั้ง' if number(count) else 'ไม่ทราบ') + '\nหมดอายุ ' + expiry_text, style='CardMuted.TLabel', font=('Leelawadee UI', 9)).pack(side='left')
-                enabled = reset_command(account, reset_info, True, False) is not None
+                wait_reason = None if reset_info.get('uncertain') else reset_wait_reason(usage, hours=preferences['avoidResetHours'])
+                enabled = reset_command(account, reset_info, True, False) is not None and not wait_reason
                 ttk.Button(reset_line, text='ดูข้อมูล', command=lambda a=account, u=usage: details(a, u)).pack(side='right')
                 ttk.Button(reset_line, text='ตรวจคำขอเดิม' if reset_info.get('uncertain') else 'รีเซ็ตฟรี', command=lambda a=account: request_reset(a), state='normal' if enabled else 'disabled').pack(side='right', padx=dp(5))
                 if not enabled:
-                    reason = 'Claude ยังไม่รองรับรีเซ็ตจากแอปนี้' if provider == 'claude' else reset_reason(reset_info)
+                    reason = 'Claude ยังไม่รองรับรีเซ็ตจากแอปนี้' if provider == 'claude' else wait_reason or reset_reason(reset_info)
                     reason_label = ttk.Label(row, text=reason, style='CardMuted.TLabel', font=('Leelawadee UI', 9), wraplength=dp(360))
                     reason_label.pack(anchor='w', fill='x')
                     reason_label.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(dp(160), e.width)))
@@ -564,10 +623,17 @@ def main():
     def poll():
         try:
             accounts, usage, message = events.get_nowait()
+            if accounts == 'notification':
+                notice.set(message)
+                root.after(100, poll)
+                return
             if accounts == 'reset-status':
                 account, reset_status = usage, message
                 state['resetStatuses'][account['id']] = reset_status
                 command = reset_command(account, reset_status, True, False)
+                wait_reason = None if reset_status.get('uncertain') else reset_wait_reason(values_by_account().get(account['id']), hours=preferences['avoidResetHours'])
+                if wait_reason:
+                    command = None
                 confirmed = False
                 if command:
                     if reset_status.get('uncertain'):
@@ -578,7 +644,7 @@ def main():
                         explanation = '\n\nการดำเนินการนี้ใช้สิทธิ์ฟรี 1 ครั้งเพื่อรีเซ็ตโควตา\nไม่ซื้อเครดิต ไม่เปลี่ยนแพ็กเกจ และไม่สลับบัญชี\n\nต้องการใช้สิทธิ์ตอนนี้หรือไม่?'
                     confirmed = messagebox.askokcancel(title, account_title(account) + '\n' + str(reset_status.get('accountEmail') or 'ตรวจสอบบัญชีแล้ว') + explanation, parent=root)
                 else:
-                    messagebox.showinfo('ยังรีเซ็ตไม่ได้', reset_reason(reset_status), parent=root)
+                    messagebox.showinfo('ยังรีเซ็ตไม่ได้', wait_reason or reset_reason(reset_status), parent=root)
                 state['busy'] = False
                 render()
                 if confirmed:
@@ -591,22 +657,26 @@ def main():
             if accounts is not None:
                 state.update(accounts=accounts, usage=usage, resetStatuses=usage.pop('_resetStatuses', {}))
                 preferences['numbers'] = stable_numbers(accounts, preferences['numbers'])
-                preferences['alerts'], alerts = alert_policy(preferences['alerts'], accounts, values_by_account(), datetime.now(timezone.utc), notifications.get())
+                preferences['alerts'], alerts = alert_policy(preferences['alerts'], accounts, values_by_account(), datetime.now(timezone.utc), notifications.get(), preferences['strategy'], preferences['numbers'])
                 render()
                 for alert in alerts:
-                    account = next(a for a in accounts if a['id'] == alert['account'])
-                    text = account_title(account) + (' เป็นบัญชีที่แนะนำใหม่' if alert['kind'] == 'winner' else ' มีโควตาเหลือและจะรีเซ็ตภายใน 60 นาที')
+                    messages = []
+                    best = provider_winner(accounts, values_by_account(), alert['provider'], strategy=preferences['strategy'], numbers=preferences['numbers'])
+                    if best:
+                        messages.append('แนะนำ ' + account_title(best) + ' · ยืนยันก่อนสลับ')
+                    for event in [alert] + alert.get('also', []):
+                        account = next(a for a in accounts if a['id'] == event['account'])
+                        detail = 'เป็นบัญชีที่แนะนำตามโหมดที่เลือก' if event['kind'] == 'winner' else ('ใช้' + ('รอบหลัก' if event['window'] == 'primary' else 'รายสัปดาห์') + f'ไป {event["used"]:g}%' if event['kind'] == 'usage' else 'มีโควตาเหลือและจะรีเซ็ตภายใน 60 นาที')
+                        messages.append(account_title(account) + ' ' + detail)
+                    text = '\n'.join(messages[:3]) + (f'\nและอีก {len(messages)-3} รายการ' if len(messages) > 3 else '')
                     notice.set(text + ' • ไม่มีการสลับอัตโนมัติ')
-                    if os.name == 'nt':
-                        try:
-                            import winsound
-                            winsound.MessageBeep(winsound.MB_ICONASTERISK)
-                        except RuntimeError:
-                            pass
+                    native_notice(text)
                 save_preferences()
             if isinstance(message, dict):
                 state['lastError'] = message['details']
                 status.set(message['text'])
+                if message.get('showError'):
+                    messagebox.showerror('ยังทำรายการไม่ได้', message['details'], parent=root)
             else:
                 status.set(message)
         except queue.Empty:
@@ -632,16 +702,45 @@ def main():
             work(['list'])
         root.after(1000, refresh_timer)
 
+    def native_notice(body, register=False, test=False):
+        if synthetic:
+            notice.set('ตัวอย่างการแจ้งเตือน • ไม่มีการส่ง Windows notification')
+            return
+        def send():
+            try:
+                from windows_notifications import register_notifications, send_notification
+                result = register_notifications() if register else {'ok': True}
+                if result['ok'] and (not register or test):
+                    result = send_notification('AI Accounts', body)
+                if not result['ok']:
+                    text = 'แจ้งในแอปได้ แต่ Windows notification ยังไม่พร้อม · ตรวจการตั้งค่า Notifications'
+                else:
+                    text = 'ส่งข้อความทดสอบให้ Windows แล้ว · ตรวจแบนเนอร์หรือศูนย์แจ้งเตือน' if test else ('เปิดการแจ้งเตือนแล้ว · ทำงานขณะเปิดแอป · ไม่สลับหรือรีเซ็ตอัตโนมัติ' if register else body)
+                events.put(('notification', None, text))
+            except Exception:
+                events.put(('notification', None, 'ส่ง Windows notification ไม่สำเร็จ · ข้อความยังแสดงในแอป'))
+        threading.Thread(target=send, daemon=True).start()
+
     def notification_toggle():
         preferences['notifications'] = notifications.get()
         save_preferences()
-        notice.set(('เปิด' if notifications.get() else 'ปิด') + 'การแจ้งในแอปและเสียง • ไม่มี Windows toast • ไม่สลับบัญชีอัตโนมัติ')
+        if notifications.get():
+            native_notice('', register=True)
+        else:
+            notice.set('ปิดการแจ้งเตือนแล้ว')
 
     def notification_help():
-        messagebox.showinfo('การแจ้งเตือน', 'ปิดเป็นค่าเริ่มต้น เมื่อเปิดจะแจ้งในแอปและเล่นเสียง Windows\nไม่มีการส่ง Windows toast หรือข้อมูลอีเมล\n\nแจ้งเมื่อบัญชีแนะนำเปลี่ยน หรือรอบที่จำกัดการใช้งานจะรีเซ็ตภายใน 60 นาทีและยังมีโควตา\nเว้นอย่างน้อย 30 นาทีต่อผู้ให้บริการ และจำเหตุการณ์เพื่อไม่แจ้งซ้ำ\nข้อมูลเก่าหรืออ่านไม่สำเร็จจะไม่แจ้งเตือน\n\nรีเฟรชทุก 5 นาทีเฉพาะขณะเปิดแอป ไม่มีการสลับบัญชีอัตโนมัติ', parent=root)
+        messagebox.showinfo('การแจ้งเตือน', 'แจ้งเมื่อใช้โควตาถึง 50% ของรอบหลักหรือรายสัปดาห์ ครั้งเดียวต่อรอบ\nแจ้งเมื่อบัญชีที่แนะนำเปลี่ยนตามโหมดที่เลือก หรือใกล้รีเซ็ต\n\nWindows notification ไม่แสดงอีเมล และขึ้นกับสิทธิ์ Notifications/Do not disturb\nข้อมูลเก่าหรืออ่านไม่สำเร็จไม่ใช้แนะนำ\n\nรีเฟรชทุก 5 นาทีขณะเปิดแอปเท่านั้น ไม่มีการสลับบัญชีหรือรีเซ็ตอัตโนมัติ', parent=root)
 
-    for title, command in [('เชื่อมข้อมูลโควตา', 'connect'), ('แชร์เซสชัน', 'setup')]:
-        ttk.Button(actions, text=title, style='Side.TButton', command=lambda c=command: work([c])).pack(fill='x', pady=dp((0, 7)))
+    def connect_accounts():
+        if state['busy']:
+            status.set('กำลังทำรายการก่อนหน้าอยู่ · รอผลก่อนเริ่มรายการใหม่')
+            return
+        if any(a['provider'] == 'claude' for a in state['accounts']) and not messagebox.askokcancel('เชื่อมข้อมูล Claude', 'จะออกจากหน้าต่าง Claude ที่ไม่มีงานกำลังทำ เพื่ออ่านข้อมูลล็อกอินและโควตา\nบันทึกข้อความที่ยังไม่ได้ส่งก่อนดำเนินการ\n\nไม่ลบบัญชีหรือ session และเปิดกลับได้จากปุ่มใช้บัญชีนี้', parent=root):
+            return
+        work(['connect'])
+    ttk.Button(actions, text='เชื่อมข้อมูลโควตา', style='Side.TButton', command=connect_accounts).pack(fill='x', pady=dp((0, 7)))
+    ttk.Button(actions, text='แชร์เซสชัน', style='Side.TButton', command=lambda: work(['setup'])).pack(fill='x', pady=dp((0, 7)))
     context = tk.Toplevel(root)
     context.withdraw()
     context.title('บันทึกส่งต่อบริบท')
@@ -654,8 +753,26 @@ def main():
         context.deiconify()
         context.lift()
     ttk.Button(actions, text='บันทึกส่งต่อบริบท', style='Side.TButton', command=toggle_context).pack(fill='x', pady=dp((0, 24)))
+    modes = {'ใช้เรียง': 'sequential', 'Balance': 'balance', 'ตามโควตา / รีเซ็ต': 'rate'}
+    strategy = tk.StringVar(value=next(k for k, v in modes.items() if v == preferences['strategy']))
+    avoid_reset = tk.StringVar(value=str(preferences['avoidResetHours']))
+    def policy_changed(event=None):
+        preferences['strategy'] = modes[strategy.get()]
+        preferences['avoidResetHours'] = int(avoid_reset.get())
+        save_preferences()
+        render()
+        notice.set('ใช้โหมด ' + strategy.get() + ' · เปลี่ยนเฉพาะคำแนะนำ ไม่มีการสลับบัญชี')
+    ttk.Label(sidebar, text='เลือกบัญชีแบบ', style='Side.TLabel').pack(anchor='w')
+    chooser = ttk.Combobox(sidebar, textvariable=strategy, values=list(modes), state='readonly', width=17)
+    chooser.pack(fill='x', pady=dp((4, 10)))
+    chooser.bind('<<ComboboxSelected>>', policy_changed)
+    ttk.Label(sidebar, text='เก็บสิทธิ์รีเซ็ตเมื่อใกล้\nรอบปกติ (ชั่วโมง)', style='Side.TLabel').pack(anchor='w')
+    reset_chooser = ttk.Combobox(sidebar, textvariable=avoid_reset, values=['1', '6', '24', '48'], state='readonly', width=17)
+    reset_chooser.pack(fill='x', pady=dp((4, 12)))
+    reset_chooser.bind('<<ComboboxSelected>>', policy_changed)
     ttk.Label(sidebar, text='การแจ้งเตือน', style='Side.TLabel', font=('Leelawadee UI', 10, 'bold')).pack(anchor='w')
-    ttk.Checkbutton(sidebar, text='ข้อความและเสียง', style='Side.TCheckbutton', variable=notifications, command=notification_toggle).pack(anchor='w')
+    ttk.Checkbutton(sidebar, text='เปิดแจ้งเตือน', style='Side.TCheckbutton', variable=notifications, command=notification_toggle).pack(anchor='w')
+    ttk.Button(sidebar, text='ทดสอบแจ้งเตือน', style='Side.TButton', command=lambda: native_notice('ทดสอบการแจ้งเตือน · ไม่มีการสลับบัญชีหรือใช้สิทธิ์รีเซ็ต', register=True, test=True)).pack(fill='x', pady=dp((0, 5)))
     ttk.Button(sidebar, text='ตั้งค่าการแจ้งเตือน', style='Side.TButton', command=notification_help).pack(fill='x')
     ttk.Label(sidebar, text='ข้อมูลอยู่ในเครื่อง\nไม่สลับบัญชีอัตโนมัติ', style='Side.TLabel', font=('Leelawadee UI', 9)).pack(side='bottom', anchor='w', pady=dp(4))
     ttk.Label(context_body, text='บันทึกไว้แล้วคัดลอกไปวางในแชตใหม่ • ประวัติแชตจริงยังแยกตามผู้ให้บริการ', style='Muted.TLabel', wraplength=dp(570)).pack(anchor='w')

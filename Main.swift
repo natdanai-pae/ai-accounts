@@ -26,6 +26,78 @@ struct AlertSnapshot {
     let remaining: Double
     let reset: Date
 }
+enum AccountStrategy: String, CaseIterable {
+    case sequential, balance, rate
+    var title: String { switch self { case .sequential: return "ตามลำดับ"; case .balance: return "กระจายโควตา"; case .rate: return "ตามรอบรีเซ็ต" } }
+}
+func freshWindows(_ value: QuotaViewData?, now: Date) -> [WindowQuota]? {
+    guard let value, value.error == nil, let updated = value.updatedDate, (-60...900).contains(now.timeIntervalSince(updated)), let weekly = value.weekly else { return nil }
+    let windows = [weekly] + (value.primary.map { [$0] } ?? [])
+    guard windows.allSatisfy({ window in guard let used = window.used, used.isFinite, (0...100).contains(used), let reset = window.reset else { return false }; return reset > now }) else { return nil }
+    return windows
+}
+func strategyWinner(_ accounts: [Account], quota: [String: QuotaViewData], numbers: [String: Int], provider: String, strategy: AccountStrategy, now: Date) -> String? {
+    let eligible = accounts.filter { $0.provider == provider && freshWindows(quota[$0.id], now: now)?.allSatisfy({ $0.used! < 100 }) == true }
+    return eligible.sorted { a, b in
+        let av = quota[a.id]!, bv = quota[b.id]!
+        let aw = freshWindows(av, now: now)!, bw = freshWindows(bv, now: now)!
+        if strategy == .rate {
+            func ready(_ v: QuotaViewData) -> Bool { v.weekly!.used! <= 90 && (v.primary?.used ?? 0) <= 80 }
+            if ready(av) != ready(bv) { return ready(av) }
+        }
+        if strategy != .sequential {
+            func score(_ windows: [WindowQuota]) -> Double { windows.map { (100 - $0.used!) / (strategy == .balance ? 1 : max($0.reset!.timeIntervalSince(now) / 3600, 1.0 / 60)) }.min()! }
+            if score(aw) != score(bw) { return score(aw) > score(bw) }
+        }
+        let an = numbers[a.id] ?? Int.max, bn = numbers[b.id] ?? Int.max
+        return an == bn ? a.id < b.id : an < bn
+    }.first?.id
+}
+func avoidResetReason(_ value: QuotaViewData?, hours: Int, now: Date) -> String? {
+    guard let windows = freshWindows(value, now: now) else { return "รอข้อมูลโควตาใหม่ก่อนใช้สิทธิ์" }
+    let limiting = windows.sorted { $0.used! == $1.used! ? $0.reset! > $1.reset! : $0.used! > $1.used! }.first!
+    return limiting.reset!.timeIntervalSince(now) <= Double(hours) * 3600 ? "เก็บสิทธิ์ไว้ · รอบที่ใช้มากสุดจะรีเซ็ตภายใน \(hours) ชม." : nil
+}
+struct UsageThreshold { let id: String; let window: String; let used: Double; let reset: Date }
+func thresholdEvents(_ values: [UsageThreshold], enabled: Bool, now: Date, history: inout AlertHistory) -> [UsageThreshold] {
+    guard enabled else { return [] }
+    history.events = history.events.filter { $0.value > now }
+    var pending: [UsageThreshold] = []
+    for value in values.sorted(by: { ($0.id + $0.window) < ($1.id + $1.window) }) where value.used.isFinite && (50...100).contains(value.used) && value.reset > now {
+        let key = "threshold:\(value.id):\(value.window):\(Int(value.reset.timeIntervalSince1970))"
+        if history.events[key] == nil { history.events[key] = value.reset; pending.append(value) }
+    }
+    if !pending.isEmpty { history.lastSent = now }
+    return pending
+}
+func strategyTests() {
+    let now = Date(timeIntervalSince1970: 1800000000)
+    let accounts = (1...3).map { Account(id: "codex:a\($0)", provider: "codex", key: "a\($0)", label: "", email: nil, usageAccount: nil) }
+    let numbers = Dictionary(uniqueKeysWithValues: accounts.enumerated().map { ($0.element.id, $0.offset + 1) })
+    let data = [accounts[0].id: QuotaViewData(weekly: WindowQuota(used: 90, reset: now.addingTimeInterval(86400)), updatedDate: now), accounts[1].id: QuotaViewData(weekly: WindowQuota(used: 10, reset: now.addingTimeInterval(86400)), updatedDate: now), accounts[2].id: QuotaViewData(weekly: WindowQuota(used: 40, reset: now.addingTimeInterval(7200)), primary: WindowQuota(used: 50, reset: now.addingTimeInterval(3600)), updatedDate: now)]
+    assert(strategyWinner(accounts, quota: data, numbers: numbers, provider: "codex", strategy: .sequential, now: now) == accounts[0].id)
+    assert(strategyWinner(accounts, quota: data, numbers: numbers, provider: "codex", strategy: .balance, now: now) == accounts[1].id)
+    assert(strategyWinner(accounts, quota: data, numbers: numbers, provider: "codex", strategy: .rate, now: now) == accounts[2].id)
+    assert(strategyWinner(accounts, quota: data, numbers: numbers, provider: "codex", strategy: .rate, now: now.addingTimeInterval(901)) == nil)
+    assert(avoidResetReason(data[accounts[2].id], hours: 24, now: now) != nil)
+    assert(avoidResetReason(data[accounts[0].id], hours: 6, now: now) == nil)
+    var history = AlertHistory(lastSent: now)
+    let value = UsageThreshold(id: "codex:a1", window: "weekly", used: 50, reset: now.addingTimeInterval(86400))
+    assert(thresholdEvents([value], enabled: true, now: now, history: &history).first?.id == value.id, "new threshold bypasses winner cooldown")
+    assert(thresholdEvents([value], enabled: true, now: now.addingTimeInterval(1800), history: &history).isEmpty)
+    assert(thresholdEvents([value], enabled: true, now: now.addingTimeInterval(3600), history: &history).isEmpty)
+    var batchHistory = AlertHistory(lastSent: now)
+    let primary = UsageThreshold(id: value.id, window: "primary", used: 100, reset: value.reset)
+    assert(thresholdEvents([value, primary], enabled: true, now: now, history: &batchHistory).count == 2)
+    batchHistory = try! JSONDecoder().decode(AlertHistory.self, from: JSONEncoder().encode(batchHistory))
+    assert(thresholdEvents([value, primary], enabled: true, now: now, history: &batchHistory).isEmpty)
+    let nextWindow = UsageThreshold(id: value.id, window: "weekly", used: 50, reset: value.reset.addingTimeInterval(86400))
+    assert(thresholdEvents([nextWindow], enabled: true, now: now, history: &batchHistory).count == 1)
+    let equalUsage = QuotaViewData(weekly: WindowQuota(used: 95, reset: now.addingTimeInterval(90000)), primary: WindowQuota(used: 95, reset: now.addingTimeInterval(3600)), updatedDate: now)
+    assert(avoidResetReason(equalUsage, hours: 24, now: now) == nil, "equal depletion uses later reset")
+    assert(avoidResetReason(equalUsage, hours: 48, now: now) != nil, "user's two-day guard protects upcoming regular reset")
+    assert(avoidResetReason(equalUsage, hours: 24, now: now.addingTimeInterval(901)) != nil)
+}
 struct ResetAvailability: Decodable {
     let ok: Bool
     let supported: Bool?
@@ -79,10 +151,11 @@ func alertEvent(enabled: Bool, winner: String?, snapshots: [AlertSnapshot], now:
     return result
 }
 func notificationHint(enabled: Bool, nativeAllowed: Bool) -> String {
-    !enabled ? "เปิดแจ้งเตือนเพื่อรู้ว่าควรใช้บัญชีไหน" : nativeAllowed ? "แจ้งเตือนเมื่อคำแนะนำเปลี่ยน หรือมีโควตาเหลือก่อนรีเซ็ต" : "แจ้งเตือนในแอปเปิดอยู่ · macOS ยังไม่อนุญาตการแจ้งเตือน"
+    !enabled ? "เปิดแจ้งเตือนเพื่อรู้ว่าควรใช้บัญชีไหน" : nativeAllowed ? "แจ้งเมื่อใช้ถึง 50% คำแนะนำเปลี่ยน หรือใกล้รีเซ็ต" : "แจ้งเตือนในแอปเปิดอยู่ · macOS ยังไม่อนุญาตการแจ้งเตือน"
 }
 func refreshDue(last: Date?, now: Date, busy: Bool) -> Bool { !busy && (last.map { now.timeIntervalSince($0) >= 300 } ?? true) }
 func uiV4Tests() {
+    strategyTests()
     assert(resetReasonThai("Core five-hour or weekly remaining must be 10% or less") == "ใช้ได้เมื่อรอบใดรอบหนึ่งเหลือไม่เกิน 10%")
     assert(resetReasonThai("Identity could not be verified") == "ยังยืนยันบัญชีไม่ได้ · ลองรีเฟรช")
     assert(resetReasonThai("unknown provider failure") == "ตรวจสิทธิ์ไม่ได้ · ลองรีเฟรช")
@@ -681,7 +754,12 @@ final class AccountRow: NSView {
         detailsButton.bezelStyle = .inline; detailsButton.controlSize = .small; detailsButton.target = self; detailsButton.action = #selector(showDetails)
         resetButton.identifier = NSUserInterfaceItemIdentifier(account.id); resetButton.bezelStyle = .rounded; resetButton.controlSize = .small; resetButton.isEnabled = false
         resetButton.toolTip = "ยังไม่มีช่องทางรีเซ็ตที่ยืนยันได้สำหรับแอปนี้"
-        let title = NSStackView(views: [label("บัญชี \(number)", size: 15, color: Palette.ink, bold: true), stateText, NSView(), detailsButton, switchButton]); title.spacing = 6
+        let email = NSTextField(labelWithString: account.email ?? "ยังไม่เชื่อมอีเมล")
+        email.font = .systemFont(ofSize: 11); email.textColor = Palette.slate; email.lineBreakMode = .byTruncatingMiddle
+        email.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        email.toolTip = account.email
+        let identity = NSStackView(views: [label("บัญชี \(number)", size: 15, color: Palette.ink, bold: true), email]); identity.orientation = .vertical; identity.alignment = .leading; identity.spacing = 2
+        let title = NSStackView(views: [identity, stateText, NSView(), detailsButton, switchButton]); title.spacing = 6
         func metric(_ text: NSTextField, _ bar: NSProgressIndicator, _ time: NSTextField) -> NSStackView {
             bar.style = .bar; bar.isIndeterminate = false; bar.minValue = 0; bar.maxValue = 100; bar.controlSize = .small
             text.font = .monospacedDigitSystemFont(ofSize: 14, weight: .semibold)
@@ -726,7 +804,7 @@ final class AccountRow: NSView {
     }
     func rank(_ recommendation: Recommendation, selected: Bool) {
         stateText.stringValue = recommendation.score == nil ? "รอข้อมูลใหม่" : selected ? "แนะนำ" : ""
-        details += "\n\n" + recommendation.reason + "\nเลือกบัญชีที่รอบหลักเหลืออย่างน้อย 20% และสัปดาห์ 10% ก่อน หากมี จากนั้นจัดตามเปอร์เซ็นต์โควตาสัปดาห์ต่อชั่วโมงถึงรีเซ็ต ไม่ใช่จำนวนโทเคนหรือการเทียบราคา"
+        details += "\n\n" + (recommendation.score == nil ? recommendation.reason : "ข้อมูลโควตายังอยู่ในช่วงที่ใช้แนะนำได้") + "\nคำแนะนำใช้กลยุทธ์ที่เลือกด้านบน ไม่ใช่จำนวนโทเคนหรือการเทียบราคา"
         toolTip = details
     }
     @objc func showDetails() {
@@ -766,6 +844,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     let notificationNotice = label("", size: 12, color: Palette.slate)
     let notice = label("", size: 13, color: Palette.teal)
     let defaults = UserDefaults.standard
+    let strategySelector = NSPopUpButton(frame: .zero, pullsDown: false)
+    let resetHoursSelector = NSPopUpButton(frame: .zero, pullsDown: false)
+    var strategy: AccountStrategy { AccountStrategy(rawValue: defaults.string(forKey: "accountStrategy") ?? "rate") ?? .rate }
+    var avoidResetHours: Int { let value = defaults.integer(forKey: "avoidResetHours"); return [1, 6, 24, 48].contains(value) ? value : 48 }
     var notificationsEnabled: Bool { notificationToggle.state == .on }
     // Synthetic review never calls helpers, changes account state or sends native notifications.
     var fixtureMode: String? {
@@ -808,7 +890,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if let data = defaults.data(forKey: "alertHistory"), let history = try? JSONDecoder().decode([String: AlertHistory].self, from: data) { alertHistories = history }
         let test = NSButton(title: "ทดสอบ", target: self, action: #selector(testNotification)); test.bezelStyle = .inline
         let settings = NSButton(title: "ตั้งค่าการแจ้งเตือน", target: self, action: #selector(notificationSettings)); settings.bezelStyle = .inline
-        let guidance = NSStackView(views: [notificationToggle, test, settings, NSView()]); guidance.spacing = 12
+        strategySelector.addItems(withTitles: AccountStrategy.allCases.map(\.title)); strategySelector.selectItem(at: AccountStrategy.allCases.firstIndex(of: strategy)!)
+        strategySelector.target = self; strategySelector.action = #selector(changeStrategy)
+        strategySelector.setAccessibilityLabel("กลยุทธ์เลือกบัญชี")
+        strategySelector.toolTip = "ตามลำดับ: ใช้บัญชีแรกที่พร้อม · กระจายโควตา: เลือกบัญชีที่เหลือมาก · ตามรอบรีเซ็ต: เน้นบัญชีพร้อมและโควตาต่อเวลา"
+        resetHoursSelector.addItems(withTitles: ["เว้นรีเซ็ต 1 ชม.", "เว้นรีเซ็ต 6 ชม.", "เว้นรีเซ็ต 24 ชม.", "เว้นรีเซ็ต 2 วัน"])
+        resetHoursSelector.selectItem(at: [1, 6, 24, 48].firstIndex(of: avoidResetHours)!)
+        resetHoursSelector.target = self; resetHoursSelector.action = #selector(changeStrategy)
+        resetHoursSelector.setAccessibilityLabel("หลีกเลี่ยงใช้สิทธิ์เมื่อใกล้รีเซ็ตตามรอบ")
+        let guidance = NSStackView(views: [notificationToggle, test, settings, NSView(), strategySelector, resetHoursSelector]); guidance.spacing = 10
         let providerColumns = NSStackView(); providerColumns.orientation = .horizontal; providerColumns.alignment = .top; providerColumns.distribution = .fillEqually; providerColumns.spacing = 16
         for provider in ["codex", "claude"] {
             let column = NSStackView(); column.orientation = .vertical; column.alignment = .leading; column.spacing = 0
@@ -876,9 +966,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc func wake() { tick() }
     func tick() {
         updateRecommendations()
+        if fixtureMode == nil && !refreshing && !state.busy { for provider in ["codex", "claude"] { evaluateAlerts(provider: provider) } }
         if refreshDue(last: lastRefresh, now: Date(), busy: state.busy || refreshing) { refresh() }
     }
     func updateNotificationHint() { notificationNotice.stringValue = notificationHint(enabled: notificationsEnabled, nativeAllowed: nativeAllowed) }
+    @objc func changeStrategy() {
+        guard fixtureMode == nil else { return }
+        defaults.set(AccountStrategy.allCases[strategySelector.indexOfSelectedItem].rawValue, forKey: "accountStrategy")
+        defaults.set([1, 6, 24, 48][resetHoursSelector.indexOfSelectedItem], forKey: "avoidResetHours")
+        updateRecommendations()
+        for provider in ["codex", "claude"] { evaluateAlerts(provider: provider) }
+    }
     @objc func toggleNotifications() {
         if fixtureMode == nil { defaults.set(notificationsEnabled, forKey: "alertsEnabled") }
         updateNotificationHint()
@@ -890,7 +988,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     @objc func notificationSettings() {
         let alert = NSAlert(); alert.messageText = "การแจ้งเตือน"
-        alert.informativeText = "แจ้งเมื่อบัญชีที่แนะนำเปลี่ยน หรือบัญชียังมีโควตาในรอบที่จำกัดและจะรีเซ็ตภายใน 60 นาที\n\nเว้นอย่างน้อย 30 นาทีต่อบริการ ไม่แจ้งเหตุการณ์เดิมซ้ำ และใช้เฉพาะข้อมูลอายุไม่เกิน 15 นาที\n\nแอปต้องเปิดอยู่ ไม่สลับบัญชีให้อัตโนมัติ หาก macOS ไม่อนุญาต ยังเห็นข้อความเตือนในแอปได้\n\nสิทธิ์แจ้งเตือน macOS เปลี่ยนได้ที่ System Settings › Notifications › AI Accounts"
+        alert.informativeText = "แจ้งเมื่อใช้โควตาถึง 50% ต่อบัญชีและรอบรีเซ็ต เมื่อบัญชีที่แนะนำเปลี่ยน หรือมีโควตาเหลือก่อนรีเซ็ตภายใน 60 นาที\n\nรวมเหตุการณ์ใช้ถึง 50% ที่พบพร้อมกัน และแจ้งครั้งเดียวต่อรอบ ส่วนคำแนะนำเว้นอย่างน้อย 30 นาทีต่อบริการ และใช้เฉพาะข้อมูลอายุไม่เกิน 15 นาที\n\nแอปต้องเปิดอยู่ ไม่สลับบัญชีให้อัตโนมัติ หาก macOS ไม่อนุญาต ยังเห็นข้อความเตือนในแอปได้\n\nสิทธิ์แจ้งเตือน macOS เปลี่ยนได้ที่ System Settings › Notifications › AI Accounts"
         alert.addButton(withTitle: "ปิด"); alert.beginSheetModal(for: window)
     }
     func showNotice(_ message: String, test: Bool = false) {
@@ -908,14 +1006,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func evaluateAlerts(provider: String) {
         let now = Date()
         let snapshots = accounts.filter { $0.provider == provider }.compactMap { account in quotaValues[account.id].flatMap { alertSnapshot(id: account.id, value: $0, now: now) } }
-        let values = Dictionary(uniqueKeysWithValues: accounts.filter { $0.provider == provider }.map { account in
-            let value = quotaValues[account.id]
-            return (account.id, value?.error == nil ? recommend(weekly: value?.weekly, primary: value?.primary, updated: value?.updatedDate, now: now) : Recommendation(score: nil, hours: nil, reason: ""))
-        })
-        let winner = recommendationWinner(accounts, values: values, provider: provider)
+        let winner = strategyWinner(accounts, quota: quotaValues, numbers: displayNumbers, provider: provider, strategy: strategy, now: now)
         var history = alertHistories[provider] ?? AlertHistory()
         let previousWinner = history.winner
-        if let id = alertEvent(enabled: notificationsEnabled, winner: winner, snapshots: snapshots, now: now, history: &history), let snapshot = snapshots.first(where: { $0.id == id }), let number = displayNumbers[id] {
+        let thresholds = accounts.filter { $0.provider == provider }.flatMap { account -> [UsageThreshold] in
+            guard let windows = freshWindows(quotaValues[account.id], now: now) else { return [] }
+            return windows.enumerated().map { UsageThreshold(id: account.id, window: $0.offset == 0 ? "สัปดาห์" : "รอบหลัก", used: $0.element.used!, reset: $0.element.reset!) }
+        }
+        let pending = thresholdEvents(thresholds, enabled: notificationsEnabled, now: now, history: &history)
+        if !pending.isEmpty {
+            let usage = pending.map { "บัญชี \(displayNumbers[$0.id] ?? 0) ใช้\($0.window) \(Int($0.used))%" }.joined(separator: " · ")
+            let recommendation = winner.flatMap { displayNumbers[$0] }.map { " · แนะนำบัญชี \($0)" } ?? ""
+            showNotice("\(provider == "codex" ? "Codex" : "Claude") \(usage)\(recommendation)")
+            if let winner { history.winner = winner }
+        } else if let id = alertEvent(enabled: notificationsEnabled, winner: winner, snapshots: snapshots, now: now, history: &history), let snapshot = snapshots.first(where: { $0.id == id }), let number = displayNumbers[id] {
             let reason = previousWinner != nil && previousWinner != winner && id == winner ? "แนะนำ" : "ใกล้รีเซ็ต"
             showNotice("\(provider == "codex" ? "Codex" : "Claude") \(reason)บัญชี \(number) · เหลือ \(Int(snapshot.remaining))% · \(resetSummary(snapshot.reset, now: now))")
         }
@@ -948,9 +1052,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let provider = accounts.first { $0.id == id }?.provider
             row.switchButton.isEnabled = !busy && (provider == "codex" ? dependencies.codexApp : dependencies.claudeApp)
             if let (value, fetched) = resetValues[id] {
-                row.resetButton.isEnabled = !busy && canReset(value, fetched: fetched, now: Date())
+                let avoid = avoidResetReason(quotaValues[id], hours: avoidResetHours, now: Date())
+                row.resetButton.isEnabled = !busy && canReset(value, fetched: fetched, now: Date()) && avoid == nil
                 row.resetButton.title = value.uncertain == true ? "ตรวจคำขอเดิม" : "ใช้สิทธิ์รีเซ็ตฟรี"
-                row.resetButton.toolTip = resetReasonThai(value.reason)
+                if value.uncertain != true, avoid?.hasPrefix("เก็บสิทธิ์") == true { row.resetButton.title = "รอรีเซ็ตตามรอบ" }
+                row.resetButton.toolTip = avoid ?? resetReasonThai(value.reason)
                 if let count = value.availableCount { row.resetText.stringValue = "รีเซ็ตฟรี \(count) ครั้ง" + (value.expiresAt.map { " · หมด \(shortDate(Date(timeIntervalSince1970: $0)))" } ?? " · ไม่ทราบวันหมดอายุ") }
             } else { row.resetButton.isEnabled = false; row.resetButton.toolTip = "กำลังตรวจสิทธิ์รีเซ็ตจากผู้ให้บริการ" }
         }
@@ -989,24 +1095,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             } else { values[account.id] = Recommendation(score: nil, hours: nil, reason: "ยังไม่มีข้อมูลที่ใช้แนะนำได้") }
         }
         for provider in ["codex", "claude"] {
-            let winner = recommendationWinner(accounts, values: values, provider: provider)
+            let winner = strategyWinner(accounts, quota: quotaValues, numbers: displayNumbers, provider: provider, strategy: strategy, now: now)
             if let strip = strips[provider] {
                 if let winner, let number = displayNumbers[winner], let value = quotaValues[winner], alertSnapshot(id: winner, value: value, now: now) != nil {
                     strip.title.stringValue = "แนะนำบัญชี \(number)"
-                    let runner = recommendationWinner(accounts.filter { $0.id != winner }, values: values, provider: provider)
-                    let ready = values[winner]?.usable == true
                     let base = value.primary.map { "รอบหลัก \(remaining($0.used)) · สัปดาห์ \(remaining(value.weekly?.used))" } ?? "ใช้ข้อมูลรายสัปดาห์ · เหลือ \(remaining(value.weekly?.used))"
-                    var comparison = "\(resetSummary(value.weekly?.reset)) · \(ready ? "มีโควตาพร้อมใช้" : "โควตาเหลือน้อยทุกบัญชี")"
-                    if let runner, let runnerValue = quotaValues[runner], let n = displayNumbers[runner] {
-                        if ready && values[runner]?.usable == false {
-                            comparison = (runnerValue.primary?.used ?? 0) > 80 ? "พร้อมกว่า บัญชี \(n) ที่รอบหลักเหลือ \(remaining(runnerValue.primary?.used))" : "พร้อมกว่า บัญชี \(n) ที่สัปดาห์เหลือ \(remaining(runnerValue.weekly?.used))"
-                        }
-                        else if let reset = value.weekly?.reset, let other = runnerValue.weekly?.reset, reset < other { comparison = "สัปดาห์รีเซ็ตก่อนบัญชี \(n) · \(resetSummary(reset))" }
-                        else { comparison = values[winner]?.score == values[runner]?.score ? "ใกล้เคียงบัญชี \(n) · เลือกตามลำดับคงที่" : "โควตาต่อเวลาถึงรีเซ็ตสูงกว่าบัญชี \(n)" }
+                    let comparison: String
+                    switch strategy {
+                    case .sequential: comparison = "บัญชีแรกตามลำดับที่ยังมีโควตา"
+                    case .balance: comparison = "มีโควตาในรอบที่เหลือน้อยสุดมากที่สุด"
+                    case .rate: comparison = "เน้นบัญชีพร้อมใช้ แล้วเทียบโควตาต่อเวลาถึงรีเซ็ต"
                     }
                     strip.reason.stringValue = base + "\n" + comparison
                     strip.button.title = "ใช้บัญชี \(number)"; strip.button.identifier = NSUserInterfaceItemIdentifier(winner)
-                    strip.toolTip = "ให้บัญชีรอบหลัก ≥20% และสัปดาห์ ≥10% มาก่อน แล้วเทียบเปอร์เซ็นต์โควตาสัปดาห์ต่อชั่วโมงถึงรีเซ็ต เป็นคำแนะนำโดยประมาณ ไม่ใช่จำนวนโทเคนหรือการเทียบราคา"
+                    strip.toolTip = "เลือกตามกลยุทธ์ที่ตั้งไว้ ใช้เฉพาะข้อมูลใหม่ภายใน 15 นาที เป็นคำแนะนำโดยประมาณ ไม่ใช่จำนวนโทเคนหรือการเทียบราคา"
                 } else {
                     strip.title.stringValue = "ยังแนะนำบัญชีไม่ได้"
                     strip.reason.stringValue = accounts.contains { $0.provider == provider } ? "ต้องมีข้อมูลโควตาล่าสุด · ลองรีเฟรช" : "เพิ่มบัญชีเพื่อเริ่มดูโควตา"
@@ -1131,12 +1233,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 guard let value, canReset(value, fetched: Date(), now: Date()) else {
                     self.status.stringValue = resetReasonThai(value?.reason ?? error); return
                 }
+                if let reason = avoidResetReason(self.quotaValues[id], hours: self.avoidResetHours, now: Date()) { self.status.stringValue = reason; return }
                 let alert = NSAlert(); alert.alertStyle = .warning
                 alert.messageText = value.uncertain == true ? "ตรวจคำขอรีเซ็ตเดิม?" : "ใช้สิทธิ์รีเซ็ตฟรี 1 ครั้ง?"
                 alert.informativeText = "Codex บัญชี \(self.displayNumbers[id] ?? 0)\n\(value.accountEmail ?? value.accountId ?? "ไม่ทราบตัวตน")\nเหลือ \(value.availableCount ?? 0) สิทธิ์" + (value.expiresAt.map { " · หมด \(shortDate(Date(timeIntervalSince1970: $0)))" } ?? "") + "\n\nรีเซ็ตขีดจำกัดการใช้งานของบัญชีนี้ตามสิทธิ์ที่ผู้ให้บริการกำหนด ไม่สลับบัญชี ไม่ซื้อเครดิต" + (value.uncertain == true ? "\nส่งคำขอเดิมด้วยรหัสเดิมเพื่อยืนยันผล ไม่สร้างคำขอใหม่" : "\nผู้ให้บริการจะตรวจสิทธิ์และโควตาอีกครั้งก่อนใช้")
                 alert.addButton(withTitle: "ยกเลิก").keyEquivalent = "\r"
                 alert.addButton(withTitle: value.uncertain == true ? "ตรวจคำขอเดิม" : "ยืนยันใช้ 1 สิทธิ์").keyEquivalent = ""
                 guard alert.runModal() == .alertSecondButtonReturn else { self.status.stringValue = "ยกเลิกแล้ว ไม่ได้ใช้สิทธิ์รีเซ็ต"; return }
+                if let reason = avoidResetReason(self.quotaValues[id], hours: self.avoidResetHours, now: Date()) { self.status.stringValue = reason; return }
                 self.mutation(["reset", "codex", account.key, "--confirmed"], timeout: 60)
             }
         }
@@ -1156,14 +1260,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard fixtureMode == nil else { return }
         guard !state.busy, !refreshing, let provider = sender.identifier?.rawValue else { return }
         let alert = NSAlert(); alert.messageText = "เพิ่มบัญชี \(provider == "codex" ? "Codex" : "Claude")"
-        alert.informativeText = "ตั้งชื่อที่แยกบัญชีได้ง่าย การเข้าสู่ระบบอย่างเป็นทางการอาจปิดแอปเดิม เมื่อเสร็จให้กดเชื่อมยอดและเซสชัน"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 350, height: 26)); field.placeholderString = "ชื่อบัญชี"
-        alert.accessoryView = field
+        let next = (displayNumbers.filter { $0.key.hasPrefix(provider + ":") }.map(\.value).max() ?? 0) + 1
+        let name = "บัญชี \(next)"
+        alert.informativeText = "เข้าสู่ระบบบัญชีใหม่ แอปจะแสดงอีเมลให้อัตโนมัติ การเข้าสู่ระบบอาจปิดแอปเดิม กรุณาบันทึกงานก่อน"
         alert.addButton(withTitle: "ยกเลิก").keyEquivalent = "\r"
         alert.addButton(withTitle: "เริ่มเข้าสู่ระบบ").keyEquivalent = ""
         guard alert.runModal() == .alertSecondButtonReturn else { return }
-        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name.count <= 120, name.rangeOfCharacter(from: .controlCharacters) == nil else { status.stringValue = "กรุณาระบุชื่อบัญชี 1–120 ตัวอักษร"; return }
         mutation(["add", provider, name], timeout: 300)
     }
     @objc func connect() {

@@ -164,6 +164,29 @@ class WindowsBackend(Backend):
                 raise SafeError('Close the running Codex desktop app first, then retry. No process was forced closed.')
         return super().switch(provider, key)
 
+    def login(self, provider, key):
+        if provider != 'claude':
+            raise SafeError('การเข้าสู่ระบบต่อรองรับเฉพาะ Claude')
+        valid_key(key)
+        conf = self.config()
+        if key not in conf['profiles']:
+            raise SafeError('ไม่พบบัญชีนี้')
+        switcher = self.claude_modules()
+        self.close_idle_claude(conf, switcher, keep=key)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            switcher.launch(conf, key)
+        return 'เปิดบัญชีเดิมให้เข้าสู่ระบบต่อแล้ว · ใช้การเข้าสู่ระบบด้วยอีเมลเพื่อเลี่ยง Google กลับผิดหน้าต่าง · เสร็จแล้วกดเชื่อมข้อมูลโควตา'
+
+    def close_idle_claude(self, conf, switcher, keep=None):
+        running = switcher.running(conf)
+        others = {k: pid for k, pid in running.items() if k != keep}
+        if any(switcher.busy_sessions(pid) for pid in others.values()):
+            raise SafeError('Claude ยังมีงานกำลังทำ กรุณารอให้เสร็จก่อนเชื่อมหรือเข้าสู่ระบบอีกบัญชี')
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            for other, pid in others.items():
+                if not switcher.quit_app(pid, conf['profiles'][other]['data_dir']):
+                    raise SafeError('Claude ยังปิดไม่เสร็จ กรุณาออกจากแอปตามปกติแล้วลองอีกครั้ง')
+
     def usage(self, provider):
         from concurrent.futures import ThreadPoolExecutor
         self.provider(provider)
@@ -185,6 +208,9 @@ class WindowsBackend(Backend):
             return list(pool.map(fetch, accounts))
 
     def connect(self):
+        profiles = self.config()['profiles']
+        if profiles:
+            self.close_idle_claude(self.config(), self.claude_modules())
         identities = read_json(self.state / 'identities.json', {})
         path = self.root / '.config/codexbar/config.json'
         conf = read_json(path, {'version': 1, 'providers': []})
@@ -195,13 +221,16 @@ class WindowsBackend(Backend):
             conf['providers'].append(entry)
         tokens = entry.setdefault('tokenAccounts', {'version': 1, 'activeIndex': 0, 'accounts': []})['accounts']
         count = 0
-        for key, profile in self.config()['profiles'].items():
+        for key, profile in profiles.items():
             directory = Path(profile['data_dir'])
             cookies = next((p for p in (directory / 'Network/Cookies', directory / 'Cookies') if p.is_file()), None)
             if cookies is None:
                 continue
-            with sqlite3.connect(cookies.resolve().as_uri() + '?mode=ro', uri=True) as db:
-                rows = db.execute("SELECT host_key, encrypted_value FROM cookies WHERE host_key='.claude.ai' AND name='sessionKey'").fetchall()
+            try:
+                with sqlite3.connect(cookies.resolve().as_uri() + '?mode=ro', uri=True) as db:
+                    rows = db.execute("SELECT host_key, encrypted_value FROM cookies WHERE host_key='.claude.ai' AND name='sessionKey'").fetchall()
+            except sqlite3.OperationalError:
+                raise SafeError('Claude ยังล็อกข้อมูลเข้าสู่ระบบอยู่ กรุณาออกจาก Claude ตามปกติแล้วกดเชื่อมข้อมูลอีกครั้ง') from None
             if len(rows) != 1:
                 continue
             token = decrypt_cookie(directory, *rows[0])
@@ -223,7 +252,8 @@ class WindowsBackend(Backend):
         except Exception:
             _write(path, original)
             raise
-        return f'Connected {count} Claude identities. Codex quotas use existing official login.'
+        pending = len(profiles) - count
+        return f'เชื่อม Claude สำเร็จ {count} บัญชี' + (f' · อีก {pending} รายการยังไม่ได้เข้าสู่ระบบ กดเข้าสู่ระบบต่อบนการ์ดเดิม ไม่ต้องเพิ่มบัญชีซ้ำ' if pending else ' · กดใช้บัญชีนี้เพื่อเปิดกลับได้')
 
     def setup(self):
         switcher = self.claude_modules()
