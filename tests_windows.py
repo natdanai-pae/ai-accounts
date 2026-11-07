@@ -3,6 +3,18 @@ import unittest
 from datetime import datetime, timezone, timedelta
 
 class WindowsTests(unittest.TestCase):
+    def test_switcher_recognizes_store_desktop_but_not_code_cli_or_renderer(self):
+        import sys
+        from pathlib import Path
+        from unittest.mock import patch
+        sys.path.insert(0, str(Path(__file__).parent / 'vendor/claude-switcher'))
+        import claude_switch as switcher
+        app = r'C:\Program Files\WindowsApps\Claude_1.0_x64__pzs8sxrjxfjjc\app\Claude.exe'
+        with patch.object(switcher.C, 'APP', app):
+            self.assertTrue(switcher.win_is_app('Claude.exe', '"' + app + '"'))
+            self.assertFalse(switcher.win_is_app('Claude.exe', '"' + app + '" --type=renderer'))
+            self.assertFalse(switcher.win_is_app('claude.exe', r'C:\Users\BDA\.local\bin\claude.exe'))
+
     def test_claude_store_profile_maps_only_official_package_cache(self):
         import tempfile
         from pathlib import Path

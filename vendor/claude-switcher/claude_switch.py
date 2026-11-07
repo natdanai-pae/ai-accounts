@@ -78,7 +78,10 @@ def win_processes():
 def win_is_app(name, cmd):
     """The desktop app's main process: claude.exe from the AnthropicClaude install, not a helper (--type=).
     Claude Code's own CLI is also called claude.exe, but it lives elsewhere."""
-    return name.lower() == "claude.exe" and "\\anthropicclaude\\" in cmd.lower() and "--type=" not in cmd
+    import ntpath
+    executable = re.match(r'^\s*(?:"([^"]+)"|(\S+))', cmd)
+    registered = executable and ntpath.normcase(executable.group(1) or executable.group(2)) == ntpath.normcase(C.APP)
+    return name.lower() == "claude.exe" and (registered or "\\anthropicclaude\\" in cmd.lower()) and "--type=" not in cmd
 
 
 def win_data_dir(cmd):

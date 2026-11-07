@@ -113,6 +113,10 @@ class WindowsBackend(Backend):
         if app is None:
             raise SafeError('Install the official Claude desktop app first')
         switcher.C.APP = str(app)
+        if app != self.local / 'AnthropicClaude/claude.exe':
+            switcher.C.PRIMARY_DATA = str(self.claude_store_roaming / 'Claude')
+            switcher.C._ROAMING = str(self.claude_store_roaming)
+            switcher.C._LOCAL = str(self.claude_store_roaming.parent / 'Local')
         return switcher
 
     def executable(self, name):

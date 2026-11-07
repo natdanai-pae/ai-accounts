@@ -15,4 +15,4 @@ AI Accounts adapts and bundles the following components. Original licenses accom
 
 No affiliation with OpenAI or Anthropic is implied. Native Codex and Claude desktop applications are not redistributed. Artifact-specific resource hashes are in DEPENDENCY-SHA256SUMS.
 
-Claude Switcher source revision: `8bd0be5ebb77c1639a6184f2c846a40cccb15890`.
+Claude Switcher source revision: `8bd0be5ebb77c1639a6184f2c846a40cccb15890`. AI Accounts modifies Windows desktop process detection to recognize the registered Claude Store executable while excluding renderer and Code CLI processes.
