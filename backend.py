@@ -571,7 +571,8 @@ if __name__ == '__main__':
     sys.modules.setdefault('backend', sys.modules[__name__])
     os.umask(0o077)
     try:
-        print(json.dumps(main(sys.argv[1:]), ensure_ascii=False))
+        # Escaped JSON preserves Thai even when Windows pipes use a legacy code page.
+        print(json.dumps(main(sys.argv[1:])))
     except Exception as error:
         print(json.dumps({'ok': False, 'message': str(error) if isinstance(error, SafeError) else 'Operation failed safely; check login and local configuration'}))
         sys.exit(1)

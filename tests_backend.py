@@ -10,6 +10,19 @@ from types import SimpleNamespace
 SOURCE = pathlib.Path(__file__).with_name('backend.py')
 
 class BackendTests(unittest.TestCase):
+    def test_cli_preserves_unicode_with_legacy_stdout_encoding(self):
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = pathlib.Path(tmp) / '.codex-switch/profiles/fixture'
+            profile.mkdir(parents=True)
+            email = 'ทดสอบ@example.test'
+            (profile / 'metadata.json').write_text(json.dumps({'email': email}), encoding='utf-8')
+            env = dict(os.environ, HOME=tmp, USERPROFILE=tmp, APPDATA=tmp, LOCALAPPDATA=tmp, PYTHONIOENCODING='cp1252:strict')
+            result = subprocess.run([sys.executable, str(SOURCE), 'list'], env=env, capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(json.loads(result.stdout)['accounts'][0]['email'], email)
+
     def test_reset_protocol_is_implemented(self):
         import backend as mod
         self.assertTrue(hasattr(mod.Backend, 'reset_status'), 'supported reset preflight is missing')
