@@ -1,0 +1,12 @@
+{
+  "revision": "5c4a194d72021aa1546fe134f1dfe10b6aa5f058",
+  "runId": 42492471986,
+  "platform": "windows-x64",
+  "assets": [
+    {
+      "name": "AI-Accounts-0.3.0-beta.5-windows-x64.zip",
+      "bytes": 166102177,
+      "sha256": "a83285fff2965fb393ac8e250727c0146e9c1bf979141294cbc4fbeb794d1361"
+    }
+  ]
+}

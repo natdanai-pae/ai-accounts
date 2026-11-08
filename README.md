@@ -2,7 +2,7 @@
 
 Desktop beta for managing multiple Codex and Claude accounts, inspecting quota, and choosing a provider-specific recommendation without automatic switching.
 
-**[Download Beta 4 for macOS and Windows](https://github.com/natdanai-pae/ai-accounts/releases/tag/v0.3.0-beta.4)** — includes Codex AI quota planning with separate full answers for Codex and Claude. After the initial quota load, configured accounts receive one automatic analysis per app launch, with a visible elapsed timer; periodic refresh does not rerun AI. Each analysis uses the logged-in Codex quota and sends only sanitized quota/reset figures. Switching still requires confirmation.
+**[Windows Beta 5](https://github.com/natdanai-pae/ai-accounts/releases/tag/v0.3.0-beta.5) / [Mac Beta 4](https://github.com/natdanai-pae/ai-accounts/releases/tag/v0.3.0-beta.4)** — includes Codex AI quota planning with separate full answers for Codex and Claude. After the initial quota load, configured accounts receive one automatic analysis per app launch, with a visible elapsed timer; periodic refresh does not rerun AI. Each analysis uses the logged-in Codex quota and sends only sanitized quota/reset figures. Switching still requires confirmation.
 
 **[คู่มือติดตั้งและใช้งานภาษาไทย — macOS / Windows](README-TH.md)**
 
@@ -14,3 +14,5 @@ Desktop beta for managing multiple Codex and Claude accounts, inspecting quota, 
 See [security and privacy](SECURITY.md), [third-party credits and licenses](THIRD-PARTY-NOTICES.md), and the [MIT license](LICENSE).
 
 Built upon [Claude Switcher](https://github.com/beyondworks/claude-switcher), [CodexSwitch](https://github.com/ScWen7/CodexSwitch), [CodexBar](https://github.com/steipete/CodexBar), and [OpenAI Codex](https://github.com/openai/codex). Not affiliated with OpenAI or Anthropic.
+
+Windows Beta 5 fixes the native notification sender name, preserves shortcut backups outside Start Menu, and was verified with an actual banner before restoring the original DND setting. Mac Beta 4 is unchanged.
