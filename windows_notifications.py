@@ -59,6 +59,11 @@ public interface IPropertyStore {
   void Commit();
 }
 public static class ShortcutIdentity {
+  [DllImport("shell32.dll", CharSet=CharSet.Unicode)]
+  static extern void SHChangeNotify(uint eventId, uint flags, string item1, IntPtr item2);
+  public static void Notify(string path, bool directory) {
+    SHChangeNotify(directory ? 0x1000u : 0x2000u, 0x1005u, path, IntPtr.Zero);
+  }
   [DllImport("shell32.dll", CharSet=CharSet.Unicode, PreserveSig=false)]
   static extern void SHGetPropertyStoreFromParsingName(string path, IntPtr context,
     uint flags, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
@@ -73,18 +78,41 @@ public static class ShortcutIdentity {
   }
 }
 '@
+    $backupRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'AI Accounts\shortcut-backups'
+    $legacy = Join-Path $programs 'AI Accounts.before-notifications.lnk'
+    if ([IO.File]::Exists($legacy)) {
+      $old = (New-Object -ComObject WScript.Shell).CreateShortcut($legacy)
+      $oldId = (New-Object -ComObject Shell.Application).NameSpace($programs).ParseName('AI Accounts.before-notifications.lnk').ExtendedProperty('System.AppUserModel.ID')
+      $parent = [IO.Path]::GetDirectoryName($old.TargetPath)
+      $ownedRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs'
+      $owned = ([IO.Path]::GetDirectoryName($parent) -eq $ownedRoot -and [IO.Path]::GetFileName($parent) -match '^AI Accounts(?:-|$)')
+      $current = ($old.TargetPath -eq $data.executable -and $old.Arguments -eq $data.arguments)
+      if (($owned -or $current) -and [IO.File]::Exists($old.TargetPath) -and [IO.Path]::GetFileName($old.TargetPath) -eq 'AI Accounts.exe' -and $old.Arguments -eq '' -and $old.Description -match '^AI Accounts(?: \d[\w. -]*Beta ?\d+)?$' -and (!$oldId -or $oldId -eq $data.appId)) {
+        [IO.Directory]::CreateDirectory($backupRoot) > $null
+        $hash = (Get-FileHash -LiteralPath $legacy -Algorithm SHA256).Hash
+        $destination = Join-Path $backupRoot ('legacy-' + $hash + '.lnk')
+        if (![IO.File]::Exists($destination)) { [IO.File]::Copy($legacy, $destination, $false) }
+        if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ne $hash) { throw 'Shortcut backup conflict' }
+        if ((Get-FileHash -LiteralPath $legacy -Algorithm SHA256).Hash -ne $hash) { throw 'Shortcut changed during backup' }
+        [IO.File]::Delete($legacy)
+        [ShortcutIdentity]::Notify($programs, $true)
+      }
+    }
+    $backup = Join-Path $backupRoot 'AI Accounts.before-notifications.lnk'
+    if ([IO.File]::Exists($shortcut) -and ![IO.File]::Exists($backup)) {
+      [IO.Directory]::CreateDirectory($backupRoot) > $null
+      [IO.File]::Copy($shortcut, $backup, $false)
+    }
     $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
     $link.TargetPath = $data.executable
     $link.Arguments = $data.arguments
     $link.WorkingDirectory = [IO.Path]::GetDirectoryName($data.executable)
     $link.Description = 'AI Accounts'
     $link.IconLocation = $data.icon
-    $backup = Join-Path $programs 'AI Accounts.before-notifications.lnk'
-    if ([IO.File]::Exists($shortcut) -and ![IO.File]::Exists($backup)) {
-      [IO.File]::Copy($shortcut, $backup, $false)
-    }
     $link.Save()
     [ShortcutIdentity]::Set($shortcut, $data.appId)
+    [ShortcutIdentity]::Notify($shortcut, $false)
+    [ShortcutIdentity]::Notify($programs, $true)
   }
   if (!(Test-Path -LiteralPath $shortcut)) { @{status='registration_required'} | ConvertTo-Json -Compress; exit }
   $folder = (New-Object -ComObject Shell.Application).NameSpace($programs)
