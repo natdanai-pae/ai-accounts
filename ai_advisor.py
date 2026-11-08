@@ -1,4 +1,4 @@
-"""Explicit, quota-only Codex analysis. AI never performs account operations."""
+"""Quota-only Codex analysis. AI never performs account operations."""
 import json
 import math
 import os
@@ -169,6 +169,6 @@ def advise(backend):
         answer = infer(backend, snapshot)
         result = validate_answer(answer, snapshot, mapping, datetime.now(timezone.utc))
         result['accounts'] = accounts
-        result['usage'] = {provider: [row for row in rows if row.get('provider') == provider]
+        result['usage'] = {provider: [row for row in rows if isinstance(row, dict) and row.get('provider') == provider]
                            for provider in ('codex', 'claude')}
         return result

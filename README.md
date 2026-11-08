@@ -2,7 +2,7 @@
 
 Desktop beta for managing multiple Codex and Claude accounts, inspecting quota, and choosing a provider-specific recommendation without automatic switching.
 
-**Downloads temporarily paused:** the initial beta has been returned to draft while account numbering, recommendations and notification UX are being revised. Source remains available; this revision is not yet approved for distribution.
+**[Download Beta 4 for macOS and Windows](https://github.com/natdanai-pae/ai-accounts/releases/tag/v0.3.0-beta.4)** — includes Codex AI quota planning with separate full answers for Codex and Claude. After the initial quota load, configured accounts receive one automatic analysis per app launch, with a visible elapsed timer; periodic refresh does not rerun AI. Each analysis uses the logged-in Codex quota and sends only sanitized quota/reset figures. Switching still requires confirmation.
 
 **[คู่มือติดตั้งและใช้งานภาษาไทย — macOS / Windows](README-TH.md)**
 

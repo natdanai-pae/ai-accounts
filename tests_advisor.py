@@ -138,7 +138,7 @@ class AdvisorTests(unittest.TestCase):
         calls = []
         def usage(provider):
             calls.append(provider)
-            return rows if provider == 'codex' else []
+            return rows + [None] if provider == 'codex' else []
         answer = {'recommendations':[{'provider':'codex','account':'candidate1','reason':'ใช้ก่อนรีเซ็ต','plan':'ใช้วันนี้'}]}
         with tempfile.TemporaryDirectory() as tmp, patch('ai_advisor.infer', return_value=answer):
             backend=SimpleNamespace(state=Path(tmp),root=Path(tmp),list_accounts=lambda:{'accounts':accounts},usage=usage)

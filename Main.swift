@@ -489,7 +489,34 @@ func aiAdviceTests() {
     assert(aiAnswerSections([:], numbers: [:]).isEmpty)
     print("PASS: AI advice normal response, malformed/unknown/cross-provider/duplicate rejection, stale/future/empty/exhausted quota guards")
 }
+struct StartupAIGate {
+    private var pending = true
+    mutating func finishInitialRefresh(configured: Bool, hasFreshQuota: Bool) -> Bool {
+        guard pending else { return false }
+        pending = false
+        return configured && hasFreshQuota
+    }
+}
+func analysisElapsed(start: Date, now: Date) -> String {
+    let seconds = Int(max(0, now.timeIntervalSince(start)))
+    return String(format: "%02d:%02d", seconds / 60, seconds % 60)
+}
+func startupAITests() {
+    var gate = StartupAIGate()
+    assert(gate.finishInitialRefresh(configured: true, hasFreshQuota: true))
+    assert(!gate.finishInitialRefresh(configured: true, hasFreshQuota: true))
+    var empty = StartupAIGate()
+    assert(!empty.finishInitialRefresh(configured: false, hasFreshQuota: false))
+    assert(!empty.finishInitialRefresh(configured: true, hasFreshQuota: true), "later setup/periodic refresh must not auto-analyze")
+    var stale = StartupAIGate()
+    assert(!stale.finishInitialRefresh(configured: true, hasFreshQuota: false))
+    let now = Date(timeIntervalSince1970: 1800000000)
+    assert(analysisElapsed(start: now, now: now.addingTimeInterval(65)) == "01:05")
+    assert(analysisElapsed(start: now, now: now.addingTimeInterval(-5)) == "00:00")
+    assert(analysisElapsed(start: now, now: now.addingTimeInterval(240)) == "04:00")
+}
 func selfTest() {
+    startupAITests()
     aiAdviceTests()
     uiV4Tests()
     releaseTests()
@@ -949,6 +976,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var alertHistories: [String: AlertHistory] = [:]
     var lastRefresh: Date?
     var refreshGeneration = 0
+    var startupAI = StartupAIGate()
+    var analysisStarted: Date?
+    var analysisPhase = ""
+    var lastPolicyTick: Date?
+    let analysisProgress = label("AI เมื่อเปิดแอป 1 ครั้ง\nการวิเคราะห์ใช้โควตา Codex", size: 11, color: Palette.slate)
     var nativeAllowed = false
     let notificationToggle = NSButton(checkboxWithTitle: "แจ้งเตือนบัญชีที่ควรใช้", target: nil, action: nil)
     let notificationNotice = label("", size: 12, color: Palette.slate)
@@ -986,8 +1018,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let context = NSButton(title: "บริบทกลาง", target: self, action: #selector(openContext))
         context.bezelStyle = .rounded
         aiButton.target = self; aiButton.action = #selector(analyzeAI); aiButton.bezelStyle = .rounded
-        aiButton.toolTip = "ให้ Codex ที่ล็อกอินอยู่ช่วยวางแผนใช้โควตา · เรียกเมื่อกดเท่านั้น"
-        let header = NSStackView(views: [icon, heading, NSView(), aiButton, refreshButton]); header.spacing = 12
+        aiButton.toolTip = "วิเคราะห์อัตโนมัติครั้งเดียวเมื่อเปิดแอปและมีข้อมูลพร้อม · กดเพื่อวิเคราะห์ใหม่ ใช้โควตา Codex"
+        let header = NSStackView(views: [icon, heading, NSView(), analysisProgress, aiButton, refreshButton]); header.spacing = 12
         let downloads = NSStackView()
         for (name, url) in [("ดาวน์โหลด Codex", "https://chatgpt.com/codex/"), ("ดาวน์โหลด Claude", "https://claude.com/download")] {
             let button = NSButton(title: name, target: self, action: #selector(download(_:)))
@@ -1065,7 +1097,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self?.updateNotificationHint()
             } }
         }
-        recommendationTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.tick() }
+        recommendationTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.updateAnalysisClock()
+            if self.lastPolicyTick.map({ Date().timeIntervalSince($0) >= 30 }) ?? true { self.lastPolicyTick = Date(); self.tick() }
+        }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(wake), name: NSWorkspace.didWakeNotification, object: nil)
         refresh()
     }
@@ -1080,6 +1116,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         updateRecommendations()
         if fixtureMode == nil && !refreshing && !state.busy { for provider in ["codex", "claude"] { evaluateAlerts(provider: provider) } }
         if refreshDue(last: lastRefresh, now: Date(), busy: state.busy || refreshing) { refresh() }
+    }
+    func updateAnalysisClock() {
+        guard let started = analysisStarted else { return }
+        analysisProgress.stringValue = analysisPhase + " · " + analysisElapsed(start: started, now: Date()) + "\nการวิเคราะห์ใช้โควตา Codex"
+    }
+    func startAnalysisClock(_ phase: String) {
+        analysisPhase = phase; analysisStarted = Date(); updateAnalysisClock()
+    }
+    func stopAnalysisClock(_ phase: String) {
+        analysisPhase = phase; updateAnalysisClock(); analysisStarted = nil
+    }
+    func finishStartupRefresh() {
+        let configured = accounts.contains { $0.provider == "codex" }
+        let fresh = accounts.contains { freshWindows(quotaValues[$0.id], now: Date())?.allSatisfy({ $0.used! < 100 }) == true }
+        if startupAI.finishInitialRefresh(configured: configured, hasFreshQuota: fresh) { analyzeAI() }
     }
     func updateNotificationHint() { notificationNotice.stringValue = notificationHint(enabled: notificationsEnabled, nativeAllowed: nativeAllowed) }
     @objc func changeStrategy() {
@@ -1259,7 +1310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc func showAIPlan(_ sender: NSButton) { showAIAnswers(provider: sender.identifier?.rawValue) }
     @objc func analyzeAI() {
         guard fixtureMode == nil, !state.busy, !refreshing else { return }
-        aiAdviceData = nil; refreshing = true; updateRecommendations()
+        aiAdviceData = nil; refreshing = true; startAnalysisClock("AI กำลังวิเคราะห์"); updateRecommendations()
         status.stringValue = "Codex กำลังวิเคราะห์แผนใช้โควตา… อาจใช้เวลาหลายนาที"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let (data, error) = runHelper(["advise"], timeout: 240)
@@ -1267,10 +1318,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 guard let self else { return }
                 self.refreshing = false
                 if let data, validAIAdvice(data, accounts: self.accounts, quota: self.quotaValues, now: Date()) != nil {
+                    self.stopAnalysisClock("วิเคราะห์เสร็จแล้ว")
                     self.aiAdviceData = data
                     self.showAIAnswers()
                     self.status.stringValue = "AI วิเคราะห์แล้ว · ตรวจแผนก่อนเลือกสลับบัญชี · รีเฟรชยอดจะล้างผล AI"
                 } else {
+                    self.stopAnalysisClock("วิเคราะห์ไม่สำเร็จ")
                     self.status.stringValue = error ?? "AI ยังให้ผลที่ใช้ได้ไม่ได้ · ใช้กลยุทธ์ที่เลือกแทน (ไม่ใช่ผล AI)"
                 }
                 self.updateRecommendations()
@@ -1282,6 +1335,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if let mode = fixtureMode { renderFixture(mode); return }
         aiAdviceData = nil
         refreshing = true; refreshGeneration += 1; let generation = refreshGeneration; updateControls()
+        startAnalysisClock("กำลังอ่านโควตา")
         status.stringValue = "กำลังค้นหาบัญชีและอ่านโควตา…"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let (data, error) = runHelper(["list"], timeout: 10)
@@ -1292,6 +1346,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     self.lastRefresh = Date()
                     self.quotaValues = self.quotaValues.mapValues { value in var copy = value; copy.error = "รีเฟรชไม่สำเร็จ · ค่าจากครั้งก่อน"; return copy }
                     self.updateRecommendations()
+                    self.stopAnalysisClock("อ่านโควตาไม่สำเร็จ")
+                    _ = self.startupAI.finishInitialRefresh(configured: false, hasFreshQuota: false)
                     self.status.stringValue = error ?? "รูปแบบบัญชีไม่ถูกต้อง — ไม่ได้เปลี่ยนบัญชีใด"
                     self.updateControls()
                 }; return
@@ -1329,6 +1385,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self.lastRefresh = Date()
                 let formatter = DateFormatter(); formatter.dateFormat = "HH:mm"; formatter.timeZone = TimeZone(identifier: "Asia/Bangkok")
                 self.status.stringValue = "อัปเดต \(formatter.string(from: Date())) · \(list.accounts.count) บัญชี · รีเฟรชทุก 5 นาทีขณะเปิดแอป · เวลาไทย"
+                self.stopAnalysisClock("อ่านโควตาแล้ว")
+                self.finishStartupRefresh()
             }
         }
     }
@@ -1359,6 +1417,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         updateNotificationHint(); updateRecommendations(); lastRefresh = now
         status.stringValue = "ตัวอย่าง \(mode) · ไม่เชื่อมต่อและไม่สลับบัญชีจริง"
         if mode == "ai" { showAIAnswers() }
+        if mode == "counting" { startAnalysisClock("AI กำลังวิเคราะห์") }
     }
     func mutation(_ arguments: [String], timeout: TimeInterval, alreadyBusy: Bool = false, prefix: String = "") {
         guard fixtureMode == nil else { return }
@@ -1492,6 +1551,18 @@ if CommandLine.arguments.contains("--layout-test") {
         assert(text.layoutManager!.usedRect(for: text.textContainer!).height > scroll.contentSize.height, "long answers must remain scrollable")
         assert(text.string.contains("24 จุดเปอร์เซ็นต์"))
     }
+    let clockTest = AppDelegate()
+    clockTest.startAnalysisClock("กำลังอ่านโควตา")
+    assert(clockTest.analysisProgress.stringValue.contains("กำลังอ่านโควตา"))
+    clockTest.startAnalysisClock("AI กำลังวิเคราะห์")
+    clockTest.analysisStarted = Date().addingTimeInterval(-65)
+    clockTest.updateAnalysisClock()
+    assert(clockTest.analysisProgress.stringValue.contains("01:05"))
+    clockTest.stopAnalysisClock("วิเคราะห์ไม่สำเร็จ")
+    let stopped = clockTest.analysisProgress.stringValue
+    clockTest.updateAnalysisClock()
+    assert(clockTest.analysisStarted == nil && clockTest.analysisProgress.stringValue == stopped && stopped.contains("วิเคราะห์ไม่สำเร็จ"))
+    print("PASS: startup one-shot gate, clock phases, elapsed formatting and stopped-error counter")
     print("PASS: separate provider answers preserve full content with independent scroll viewports")
     print("PASS: progress frame containment with primary present/absent transitions")
     exit(0)

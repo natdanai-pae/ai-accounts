@@ -3,6 +3,41 @@ from datetime import datetime, timezone, timedelta
 
 
 class AIAdviceTests(unittest.TestCase):
+    def test_claude_only_setup_does_not_start_automatic_ai(self):
+        from windows_gui import consume_startup_ai
+        accounts = [{'id': 'claude:a', 'provider': 'claude', 'key': 'a'}]
+        values = {'claude:a': self.values['codex:a']}
+        state = {'startupPending': True, 'busy': False}
+        self.assertFalse(consume_startup_ai(state, accounts, values, self.now))
+        self.assertFalse(state['startupPending'])
+        accounts += self.accounts
+        self.assertTrue(consume_startup_ai({'startupPending': True, 'busy': False}, accounts, values, self.now))
+
+    def test_startup_ai_is_once_only_fresh_idle_and_not_periodic(self):
+        from windows_gui import consume_startup_ai
+        state = {'startupPending': True, 'busy': True}
+        self.assertFalse(consume_startup_ai(state, self.accounts, self.values, self.now))
+        self.assertTrue(state['startupPending'])
+        state['busy'] = False
+        self.assertTrue(consume_startup_ai(state, self.accounts, self.values, self.now))
+        self.assertFalse(consume_startup_ai(state, self.accounts, self.values, self.now))
+        for accounts, values in (([], {}), (self.accounts, {})):
+            state = {'startupPending': True, 'busy': False}
+            self.assertFalse(consume_startup_ai(state, accounts, values, self.now))
+            self.assertFalse(consume_startup_ai(state, self.accounts, self.values, self.now))
+        self.assertFalse(consume_startup_ai({'startupPending': True, 'busy': False}, self.accounts, self.values, self.now + timedelta(minutes=16)))
+
+    def test_activity_counter_uses_elapsed_monotonic_and_stops(self):
+        from windows_gui import activity_text
+        state = {'busy': True, 'activityStarted': 10, 'operation': 'list'}
+        self.assertIn('กำลังอ่านโควตา', activity_text(state, 71))
+        self.assertIn('01:01', activity_text(state, 71))
+        state['operation'] = 'advise'
+        self.assertIn('AI กำลังวิเคราะห์', activity_text(state, 71))
+        self.assertIn('ใช้โควตา Codex', activity_text(state, 71))
+        state['busy'] = False
+        self.assertEqual(activity_text(state, 100), '')
+
     def test_callback_diagnostic_keeps_stack_without_exception_payload(self):
         from windows_gui import callback_error_trace
         try:

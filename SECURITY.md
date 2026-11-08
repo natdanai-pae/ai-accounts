@@ -14,3 +14,5 @@ AI Accounts is an independent, local account manager. It is not an official Open
 Beta packages may be unsigned or not notarized; the release notes identify the actual signing and test status. Do not disable system-wide security protections to install this application. A successful automated build does not prove live sign-in and session continuity on every operating system.
 
 For a security report, describe the issue without real credentials or private conversations. Do not attach complete profile directories. Stop using affected builds if credential confidentiality is in doubt.
+
+- AI planning sends only sanitized account numbers, quota percentages and reset timestamps to the normally logged-in Codex CLI. It runs once after a configured startup or when requested manually, consumes that Codex account quota, uses ephemeral tool-disabled inference, and never switches accounts or redeems resets. Periodic refresh does not rerun AI.

@@ -108,6 +108,22 @@ def ai_consistent_alerts(alerts, advice):
             result.append(dict(usage_events[0], also=usage_events[1:], recommendedAccount=ai['account']))
     return result
 
+def consume_startup_ai(state, accounts, values, now=None):
+    if state.get('busy') or not state.get('startupPending'):
+        return False
+    state['startupPending'] = False
+    if not any(a.get('provider') == 'codex' for a in accounts):
+        return False
+    return any(isinstance(values.get(a['id']), dict) and recommendation(values[a['id']], now)[0] is not None for a in accounts)
+
+def activity_text(state, monotonic_now):
+    if not state.get('busy'):
+        return ''
+    started = state.get('activityStarted')
+    seconds = max(0, int(monotonic_now - started)) if started is not None else 0
+    phase = {'list': 'กำลังอ่านโควตา', 'advise': 'AI กำลังวิเคราะห์ · ใช้โควตา Codex', 'sync': 'กำลังแชร์เซสชัน'}.get(state.get('operation'), 'กำลังทำรายการ')
+    return f'{phase} · {seconds // 60:02d}:{seconds % 60:02d}'
+
 def callback_error_trace(error_type, tb):
     import traceback
     # Frame locations only: no local variables, source text, or exception payload.
@@ -413,7 +429,7 @@ def main():
         root._icon = tk.PhotoImage(file=str(icon))
         root.iconphoto(True, root._icon)
     events = queue.Queue()
-    state = {'busy': False, 'accounts': [], 'usage': {}, 'resetStatuses': {}, 'lastRefresh': 0, 'lastPaint': 0}
+    state = {'busy': False, 'accounts': [], 'usage': {}, 'resetStatuses': {}, 'lastRefresh': 0, 'lastPaint': 0, 'startupPending': True}
     private_dir = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / 'AppData/Local'))) / 'AI Accounts'
     def callback_failed(error_type, error, tb):
         saved = False
@@ -465,8 +481,24 @@ def main():
     status_label.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(dp(180), e.width)))
     status_label.bind('<Button-1>', lambda e: messagebox.showinfo('สถานะล่าสุด', state.get('lastError') or status.get(), parent=root))
     ttk.Button(toolbar, text='รีเฟรช', command=lambda: work(['list'])).pack(side='right')
-    ttk.Button(toolbar, text='AI วิเคราะห์', command=lambda: work(['advise'])).pack(side='right', padx=dp((0, 7)))
+    ai_button = ttk.Button(toolbar, text='AI วิเคราะห์', command=lambda: work(['advise']))
+    ai_button.pack(side='right', padx=dp((0, 7)))
+    activity = tk.StringVar(value='')
+    activity_label = ttk.Label(heading_copy, textvariable=activity, foreground=colors['teal'], font=('Leelawadee UI', 11, 'bold'), wraplength=dp(560))
+    activity_label.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(dp(180), heading_copy.winfo_width())))
     ai_progress = ttk.Progressbar(heading_copy, mode='indeterminate', length=dp(180))
+    def update_activity():
+        activity.set(activity_text(state, time.monotonic()))
+        ai_button.configure(state='disabled' if state['busy'] else 'normal', text='กำลังวิเคราะห์…' if state['busy'] and state.get('operation') == 'advise' else 'รอรายการปัจจุบัน…' if state['busy'] else 'AI วิเคราะห์')
+        if state['busy']:
+            if not ai_progress.winfo_manager():
+                activity_label.pack(anchor='w', pady=dp((6, 0)))
+                ai_progress.pack(anchor='w', pady=dp((4, 0)))
+                ai_progress.start(12)
+        else:
+            ai_progress.stop()
+            ai_progress.pack_forget()
+            activity_label.pack_forget()
     actions = ttk.Frame(sidebar, style='Side.TFrame')
     actions.pack(fill='x')
     notice = tk.StringVar(value='ตัวอย่างข้อมูลจำลอง • ไม่เชื่อมบัญชีจริงและไม่บันทึกการตั้งค่า' if preview else 'เลือกบัญชีได้เองทุกครั้ง • รีเฟรชโควตาอัตโนมัติทุก 5 นาที')
@@ -534,17 +566,20 @@ def main():
         if not begin_account_work(state):
             status.set(account_busy_message(state))
             return
+        state.update(operation=args[0], activityStarted=time.monotonic())
+        update_activity()
         try:
             render()
         except Exception:
             state['busy'] = False  # No helper has started yet.
+            update_activity()
             raise
         state['lastRefresh'] = time.time()
         status.set('กำลังทำงาน… หากมีหน้าต่างเข้าสู่ระบบ ให้ทำขั้นตอนให้เสร็จและเปิดแอปนี้ไว้')
         if args[0] == 'advise':
             status.set('Codex AI กำลังวิเคราะห์โควตาและเวลารีเซ็ต · อาจใช้เวลาถึง 4 นาที')
-            ai_progress.pack(anchor='w', pady=dp((6, 0)))
-            ai_progress.start(12)
+        elif args[0] == 'list':
+            status.set('กำลังอ่านโควตาและเวลารีเซ็ต' + (' · เมื่อข้อมูลพร้อม AI จะวิเคราะห์หนึ่งครั้งโดยใช้โควตา Codex' if state.get('startupPending') else ''))
         def run():
             if args[0] == 'advise':
                 events.put(run_ai_work(invoke, state['resetStatuses']))
@@ -832,8 +867,7 @@ def main():
                     status.set('ไม่ได้ส่งคำขอเพิ่มเติม')
                 return
             state['busy'] = False
-            ai_progress.stop()
-            ai_progress.pack_forget()
+            update_activity()
             if accounts is not None:
                 apply_account_snapshot(state, accounts, usage, message)
                 preferences['numbers'] = stable_numbers(accounts, preferences['numbers'])
@@ -867,6 +901,8 @@ def main():
                     messagebox.showerror('ยังทำรายการไม่ได้', message['details'], parent=root)
             else:
                 status.set(message)
+            if consume_startup_ai(state, state['accounts'], values_by_account()):
+                work(['advise'])
         except queue.Empty:
             pass
 
@@ -879,6 +915,8 @@ def main():
     def sync_sessions():
         if not state['busy']:
             state['busy'] = True
+            state.update(operation='sync', activityStarted=time.monotonic())
+            update_activity()
             def run_sync():
                 try:
                     invoke(['sync'])
@@ -889,6 +927,7 @@ def main():
         root.after(20000, sync_sessions)
 
     def refresh_timer():
+        update_activity()
         if time.time() - state['lastPaint'] >= 60:
             render()
         if refresh_due(state['lastRefresh'], time.time(), state['busy']):
