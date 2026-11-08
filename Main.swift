@@ -773,9 +773,9 @@ final class AccountRow: NSView {
         metrics.distribution = .fillEqually; metrics.alignment = .top; metrics.spacing = 18
         let bottom = NSStackView(views: [resetText, NSView(), resetButton]); bottom.spacing = 6
         resetButton.isHidden = provider != "codex"
-        let stack = NSStackView(views: [title, metrics, bottom]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 9
+        let stack = NSStackView(views: [title, metrics, bottom]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false; addSubview(stack)
-        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8), stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8), stack.topAnchor.constraint(equalTo: topAnchor, constant: 11), stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -11)])
+        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8), stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8), stack.topAnchor.constraint(equalTo: topAnchor, constant: 9), stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -9)])
         for view in [title, metrics, bottom] { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         render(QuotaViewData(error: "กำลังอ่านโควตา…"))
     }
