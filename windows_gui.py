@@ -57,6 +57,55 @@ def recommendation(usage, now=None):
         scores.append((100 - used) / max((reset - now).total_seconds() / 3600, 1 / 60))
     return scores[0], 'Weekly remaining quota before reset; prefer ready accounts first'
 
+def validated_ai_advice(reply, accounts, values, now=None):
+    """AI provenance requires a fresh model response and currently usable quota."""
+    now = now or datetime.now(timezone.utc)
+    if not isinstance(reply, dict) or reply.get('ok') is not True:
+        return {}
+    generated = date(reply.get('generatedAt'))
+    rows = reply.get('recommendations')
+    if not generated or not 0 <= (now - generated).total_seconds() <= 900 or not isinstance(rows, list):
+        return {}
+    result = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        provider = row.get('provider')
+        if provider not in ('codex', 'claude'):
+            continue
+        account = next((a for a in accounts if a['id'] == row.get('account') and a['provider'] == provider), None)
+        if not account or not isinstance(values.get(account['id']), dict) or recommendation(values[account['id']], now)[0] is None:
+            continue
+        if any(not isinstance(row.get(key), str) or not row[key].strip() or len(row[key]) > limit for key, limit in (('reason', 500), ('plan', 1000))):
+            continue
+        if provider in result:
+            return {}  # Ambiguous duplicate provider output is not actionable.
+        result[provider] = dict(row, source='AI · Codex', generatedAt=reply['generatedAt'])
+    return result
+
+def ai_consistent_alerts(alerts, advice):
+    """Keep quota-threshold facts without announcing a competing formula winner."""
+    result = []
+    for alert in alerts:
+        ai = advice.get(alert['provider'])
+        if not ai:
+            result.append(alert)
+            continue
+        usage_events = [event for event in [alert] + alert.get('also', []) if event.get('kind') == 'usage']
+        if usage_events:
+            result.append(dict(usage_events[0], also=usage_events[1:], recommendedAccount=ai['account']))
+    return result
+
+def begin_account_work(state):
+    if state['busy']:
+        return False
+    state.update(busy=True, aiAdvice=None)
+    return True
+
+def apply_account_snapshot(state, accounts, usage, message):
+    state.update(accounts=accounts, usage=usage, resetStatuses=usage.pop('_resetStatuses', {}),
+                 aiAdvice=message.get('aiAdvice') if isinstance(message, dict) else None)
+
 def parse_accounts(data):
     rows = data.get('accounts')
     if not isinstance(rows, list):
@@ -359,6 +408,7 @@ def main():
     status_label.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(dp(180), e.width)))
     status_label.bind('<Button-1>', lambda e: messagebox.showinfo('สถานะล่าสุด', state.get('lastError') or status.get(), parent=root))
     ttk.Button(toolbar, text='รีเฟรช', command=lambda: work(['list'])).pack(side='right')
+    ttk.Button(toolbar, text='AI วิเคราะห์', command=lambda: work(['advise'])).pack(side='right', padx=dp((0, 7)))
     actions = ttk.Frame(sidebar, style='Side.TFrame')
     actions.pack(fill='x')
     notice = tk.StringVar(value='ตัวอย่างข้อมูลจำลอง • ไม่เชื่อมบัญชีจริงและไม่บันทึกการตั้งค่า' if preview else 'เลือกบัญชีได้เองทุกครั้ง • รีเฟรชโควตาอัตโนมัติทุก 5 นาที')
@@ -407,7 +457,7 @@ def main():
         if synthetic:
             raise RuntimeError('โหมดตัวอย่างไม่เรียกผู้ให้บริการ')
         flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-        timeout = 900 if args[0] == 'usage' else 650 if args[0] == 'add' else 180
+        timeout = 240 if args[0] == 'advise' else 900 if args[0] == 'usage' else 650 if args[0] == 'add' else 180
         result = subprocess.run([str(helper), *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout, creationflags=flags)
         if len(result.stdout) > 8 * 1024 * 1024:
             raise ValueError()
@@ -423,12 +473,14 @@ def main():
         if synthetic:
             status.set('ข้อมูลจำลองเท่านั้น • ไม่มีการเรียกผู้ให้บริการ')
             return
-        if state['busy']:
+        if not begin_account_work(state):
             status.set('กำลังทำรายการก่อนหน้าอยู่ · รอผลก่อนเริ่มรายการใหม่')
             return
-        state['busy'] = True
+        render()
         state['lastRefresh'] = time.time()
         status.set('กำลังทำงาน… หากมีหน้าต่างเข้าสู่ระบบ ให้ทำขั้นตอนให้เสร็จและเปิดแอปนี้ไว้')
+        if args[0] == 'advise':
+            status.set('Codex AI กำลังวิเคราะห์โควตาและเวลารีเซ็ต · อาจใช้เวลาถึง 4 นาที')
         def run():
             try:
                 result = invoke(args)
@@ -449,12 +501,21 @@ def main():
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     usage['_resetStatuses'] = dict(pool.map(reset_status, [a for a in accounts if a['provider'] == 'codex']))
                 message = result.get('message', '') if isinstance(result, dict) else ''
-                events.put((accounts, usage, {'text': message if args[0] in ('login', 'connect') and message else 'อัปเดตล่าสุด ' + datetime.now().strftime('%H:%M') + ' • ' + str(len(accounts)) + ' บัญชี', 'details': message}))
+                events.put((accounts, usage, {'text': message if args[0] in ('login', 'connect') and message else 'อัปเดตล่าสุด ' + datetime.now().strftime('%H:%M') + ' • ' + str(len(accounts)) + ' บัญชี', 'details': message, 'aiAdvice': result if args[0] == 'advise' else None}))
             except RuntimeError as error:
-                events.put((None, None, {'text': 'ยังยืนยันผลรีเซ็ตไม่ได้ • คลิกเพื่อดูรายละเอียด' if args[0] == 'reset' else 'ทำรายการไม่สำเร็จ • คลิกเพื่อดูรายละเอียด', 'details': str(error), 'showError': args[0] not in ('list', 'sync')}))
+                events.put((None, None, {'text': 'ยังยืนยันผลรีเซ็ตไม่ได้ • คลิกเพื่อดูรายละเอียด' if args[0] == 'reset' else 'ทำรายการไม่สำเร็จ • คลิกเพื่อดูรายละเอียด', 'details': 'AI วิเคราะห์ไม่สำเร็จ · ตรวจว่า Codex เข้าสู่ระบบแล้ว แล้วกด AI วิเคราะห์อีกครั้ง · ระหว่างนี้เลือกบัญชีเองตามสูตรเดิมได้' if args[0] == 'advise' else str(error), 'showError': args[0] not in ('list', 'sync')}))
             except Exception:
-                events.put((None, None, 'ตรวจการเข้าสู่ระบบและแอปผู้ให้บริการ แล้วลองอีกครั้ง'))
+                events.put((None, None, 'AI วิเคราะห์ไม่สำเร็จหรือหมดเวลา · ตรวจการเข้าสู่ระบบ Codex แล้วกดวิเคราะห์ใหม่ · เลือกบัญชีเองได้' if args[0] == 'advise' else 'ตรวจการเข้าสู่ระบบและแอปผู้ให้บริการ แล้วลองอีกครั้ง'))
         threading.Thread(target=run, daemon=True).start()
+
+    def switch_ai(account):
+        advice = validated_ai_advice(state.get('aiAdvice'), state['accounts'], values_by_account()).get(account['provider'])
+        if not advice or advice['account'] != account['id']:
+            state['aiAdvice'] = None
+            status.set('คำแนะนำ AI หมดอายุหรือโควตาเปลี่ยน · กด AI วิเคราะห์ใหม่')
+            render()
+            return
+        switch(account)
 
     def switch(account):
         if synthetic:
@@ -537,6 +598,7 @@ def main():
     def render():
         state['lastPaint'] = time.time()
         values = values_by_account()
+        ai_advice = validated_ai_advice(state.get('aiAdvice'), state['accounts'], values)
         populated = {p: any(a['provider'] == p for a in state['accounts']) for p in ('codex', 'claude')}
         for index, provider in enumerate(('codex', 'claude')):
             only_one = sum(populated.values()) == 1
@@ -546,6 +608,9 @@ def main():
                 widget.destroy()
             accounts = ordered_accounts([a for a in state['accounts'] if a['provider'] == provider], preferences['numbers'])
             winner = provider_winner(accounts, values, provider, strategy=preferences['strategy'], numbers=preferences['numbers'])
+            advice = ai_advice.get(provider)
+            if advice:
+                winner = next(a for a in accounts if a['id'] == advice['account'])
             ribbon = ribbons[provider]
             canvas = scroll_surfaces[0 if provider == 'codex' else 1][1]
             canvas.pack_configure(expand=bool(accounts), fill='both' if accounts else 'x')
@@ -561,11 +626,16 @@ def main():
                 week = usage['secondary']
                 heading = ttk.Frame(ribbon, style='Ribbon.TFrame')
                 heading.pack(fill='x')
-                ttk.Label(heading, text='แนะนำบัญชี ' + str(preferences['numbers'][winner['id']]), style='Ribbon.TLabel', font=('Leelawadee UI', 11, 'bold')).pack(side='left')
+                ttk.Label(heading, text=('AI · แนะนำบัญชี ' if advice else 'สูตรเดิม · บัญชี ') + str(preferences['numbers'][winner['id']]), style='Ribbon.TLabel', font=('Leelawadee UI', 11, 'bold')).pack(side='left')
                 ttk.Label(heading, text=f'เหลือ {100-week["usedPercent"]:g}%', style='Ribbon.TLabel').pack(side='right')
-                reason_label = ttk.Label(ribbon, text=recommendation_reason(accounts, values, winner, preferences['numbers'], strategy=preferences['strategy']), style='Ribbon.TLabel', wraplength=dp(370), font=('Leelawadee UI', 9))
+                reason_label = ttk.Label(ribbon, text=(advice['reason'][:180] + ('…' if len(advice['reason']) > 180 else '')) if advice else recommendation_reason(accounts, values, winner, preferences['numbers'], strategy=preferences['strategy']), style='Ribbon.TLabel', wraplength=dp(370), font=('Leelawadee UI', 9))
                 reason_label.pack(anchor='w', pady=dp((3, 0)), fill='x')
                 reason_label.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(dp(160), e.width)))
+                if advice:
+                    ai_actions = ttk.Frame(ribbon, style='Ribbon.TFrame')
+                    ai_actions.pack(fill='x', pady=dp((5, 0)))
+                    ttk.Button(ai_actions, text='ใช้บัญชีที่ AI แนะนำ', command=lambda a=winner: switch_ai(a)).pack(side='left')
+                    ttk.Button(ai_actions, text='เหตุผล / แผน AI', command=lambda a=advice: messagebox.showinfo('AI · Codex · แผนการใช้โควตา', a['reason'] + '\n\n' + a['plan'] + '\n\nวิเคราะห์เมื่อ ' + a['generatedAt'], parent=root)).pack(side='right')
             else:
                 ttk.Label(ribbon, text='ยังไม่มีบัญชีที่แนะนำ', style='Ribbon.TLabel', font=('Leelawadee UI', 11, 'bold')).pack(anchor='w')
                 unavailable = ttk.Label(ribbon, text='รีเฟรชโควตาและเวลารีเซ็ต • ข้อมูลต้องไม่เกิน 15 นาที', style='Ribbon.TLabel', wraplength=dp(360))
@@ -668,15 +738,18 @@ def main():
                 return
             state['busy'] = False
             if accounts is not None:
-                state.update(accounts=accounts, usage=usage, resetStatuses=usage.pop('_resetStatuses', {}))
+                apply_account_snapshot(state, accounts, usage, message)
                 preferences['numbers'] = stable_numbers(accounts, preferences['numbers'])
                 preferences['alerts'], alerts = alert_policy(preferences['alerts'], accounts, values_by_account(), datetime.now(timezone.utc), notifications.get(), preferences['strategy'], preferences['numbers'])
+                alerts = ai_consistent_alerts(alerts, validated_ai_advice(state.get('aiAdvice'), accounts, values_by_account()))
                 render()
                 for alert in alerts:
                     messages = []
                     best = provider_winner(accounts, values_by_account(), alert['provider'], strategy=preferences['strategy'], numbers=preferences['numbers'])
+                    if alert.get('recommendedAccount'):
+                        best = next((a for a in accounts if a['id'] == alert['recommendedAccount']), None)
                     if best:
-                        messages.append('แนะนำ ' + account_title(best) + ' · ยืนยันก่อนสลับ')
+                        messages.append(('AI แนะนำ ' if alert.get('recommendedAccount') else 'แนะนำ ') + account_title(best) + ' · ยืนยันก่อนสลับ')
                     for event in [alert] + alert.get('also', []):
                         account = next(a for a in accounts if a['id'] == event['account'])
                         detail = 'เป็นบัญชีที่แนะนำตามโหมดที่เลือก' if event['kind'] == 'winner' else ('ใช้' + ('รอบหลัก' if event['window'] == 'primary' else 'รายสัปดาห์') + f'ไป {event["used"]:g}%' if event['kind'] == 'usage' else 'มีโควตาเหลือและจะรีเซ็ตภายใน 60 นาที')
@@ -688,6 +761,9 @@ def main():
             if isinstance(message, dict):
                 state['lastError'] = message['details']
                 status.set(message['text'])
+                if message.get('aiAdvice') is not None:
+                    valid = validated_ai_advice(state.get('aiAdvice'), state['accounts'], values_by_account())
+                    status.set('AI · Codex วิเคราะห์แล้ว · ตรวจเหตุผลและแผนก่อนยืนยันสลับบัญชี' if valid else 'คำตอบ AI ไม่มีบัญชีที่ใช้ได้กับโควตาปัจจุบัน · เลือกเองตามสูตรเดิม หรือกดวิเคราะห์ใหม่')
                 if message.get('showError'):
                     messagebox.showerror('ยังทำรายการไม่ได้', message['details'], parent=root)
             else:

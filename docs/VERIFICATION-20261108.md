@@ -42,3 +42,13 @@ Private backup paths and detailed live evidence are retained in the local task r
 Windows Beta3 was launched through the installed Desktop shortcut. The native test button displayed the actual bottom-right popup with title `AI Accounts` and the full test text. DND was observed ON, switched OFF temporarily through Settings, then restored ON and verified. AI Accounts was closed normally and an independent process query confirmed zero remaining processes. No provider authentication or session changes occurred.
 
 The tested PC showed the cached sender caption `AI Accounts.before-notifications` above the correct title/body. This cosmetic sender-name issue remains; the private screenshot contains account information and is not published. No executable rebuild was required for this additional test.
+
+## Explicit Codex AI advisor — unpublished candidate
+
+- Added quota-only inference through the normally logged-in bundled Codex CLI, ephemeral execution with tools disabled. No account switching/reset actions are performed by the advisor.
+- Live synthetic inference chose 26% resetting in 36 hours before 100% resetting in 120 hours. Real Mac and Windows source inference chose Codex account 1 (25%, approximately 41 hours) and Claude account 3 (94%, approximately 28 hours). This tests actual model calls, not a mocked recommendation.
+- Full Mac bundle installed with previous app backed up at `/Users/maripae/Backups/AI-Accounts-before-AI-20261108-191620`. Native AI button and full-plan dialog verified with live results.
+- Windows source tests, frozen helper live inference (two provider recommendations), full bundled resource SHA-256 comparisons, and frozen GUI self-test passed. Native Windows AI button has not been observed. Windows disk space is low; no user account/session data or unrelated backups were removed.
+- Existing public releases do not yet include this advisor. The Windows notification sender-caption correction remains a separate unfinished item.
+
+Regression suite: 86 tests passed, one Windows-only PowerShell check skipped on Mac. No real reset-credit redemption or account switch was performed for this advisor change.

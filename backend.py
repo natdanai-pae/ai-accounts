@@ -542,6 +542,9 @@ def main(args):
         backend = WindowsBackend()
     else:
         backend = Backend()
+    if args == ['advise']:
+        from ai_advisor import advise
+        return advise(backend)
     if args == ['list']:
         return backend.list_accounts()
     if len(args) == 2 and args[0] == 'usage':

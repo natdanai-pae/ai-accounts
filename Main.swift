@@ -431,7 +431,47 @@ func usageResult(_ data: Data, exitCode: Int32) -> (Data?, String?) {
     return (nil, "อ่านโควตาไม่สำเร็จ (รหัส \(exitCode)) — ไม่ได้รับข้อมูลที่อ่านได้")
 }
 
+struct AIAdvice: Decodable { let provider: String; let account: String; let reason: String; let plan: String }
+struct AIAdviceResponse: Decodable { let ok: Bool; let generatedAt: String; let recommendations: [AIAdvice] }
+func validAIAdvice(_ data: Data, accounts: [Account], quota: [String: QuotaViewData], now: Date) -> [String: AIAdvice]? {
+    guard let response = try? JSONDecoder().decode(AIAdviceResponse.self, from: data), response.ok,
+          let generated = dateValue(response.generatedAt), (-60...900).contains(now.timeIntervalSince(generated)),
+          !response.recommendations.isEmpty, response.recommendations.count <= 2 else { return nil }
+    var result: [String: AIAdvice] = [:]
+    for item in response.recommendations {
+        guard ["codex", "claude"].contains(item.provider), result[item.provider] == nil,
+              accounts.contains(where: { $0.id == item.account && $0.provider == item.provider }),
+              !item.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, item.reason.count <= 500,
+              !item.plan.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, item.plan.count <= 1000,
+              let windows = freshWindows(quota[item.account], now: now), windows.allSatisfy({ $0.used! < 100 }) else { return nil }
+        result[item.provider] = item
+    }
+    return result
+}
+func aiAdviceTests() {
+    let now = Date(timeIntervalSince1970: 1800000000)
+    let account = Account(id: "codex:a", provider: "codex", key: "a", label: "", email: nil, usageAccount: nil)
+    let quota = [account.id: QuotaViewData(weekly: WindowQuota(used: 76, reset: now.addingTimeInterval(86400)), updatedDate: now)]
+    func payload(_ id: String = "codex:a", _ provider: String = "codex", _ generated: Date = now) -> Data {
+        try! JSONSerialization.data(withJSONObject: ["ok": true, "generatedAt": ISO8601DateFormatter().string(from: generated), "recommendations": [["provider": provider, "account": id, "reason": "ใช้ยอดที่ใกล้หมดรอบก่อน", "plan": "ใช้วันนี้ แล้วตรวจยอดใหม่"]]])
+    }
+    assert(validAIAdvice(payload(), accounts: [account], quota: quota, now: now)?.count == 1)
+    assert(validAIAdvice(payload("codex:unknown"), accounts: [account], quota: quota, now: now) == nil)
+    assert(validAIAdvice(payload("codex:a", "claude"), accounts: [account], quota: quota, now: now) == nil)
+    assert(validAIAdvice(payload("codex:a", "codex", now.addingTimeInterval(-901)), accounts: [account], quota: quota, now: now) == nil)
+    assert(validAIAdvice(payload(), accounts: [account], quota: quota, now: now.addingTimeInterval(901)) == nil)
+    assert(validAIAdvice(Data("{}".utf8), accounts: [account], quota: quota, now: now) == nil)
+    assert(validAIAdvice(payload(), accounts: [account], quota: [:], now: now) == nil)
+    assert(validAIAdvice(payload("codex:a", "codex", now.addingTimeInterval(61)), accounts: [account], quota: quota, now: now) == nil)
+    var exhausted = quota; exhausted[account.id]?.weekly = WindowQuota(used: 100, reset: now.addingTimeInterval(86400))
+    assert(validAIAdvice(payload(), accounts: [account], quota: exhausted, now: now) == nil)
+    var duplicate = try! JSONSerialization.jsonObject(with: payload()) as! [String: Any]
+    let items = duplicate["recommendations"] as! [[String: Any]]; duplicate["recommendations"] = items + items
+    assert(validAIAdvice(try! JSONSerialization.data(withJSONObject: duplicate), accounts: [account], quota: quota, now: now) == nil)
+    print("PASS: AI advice normal response, malformed/unknown/cross-provider/duplicate rejection, stale/future/empty/exhausted quota guards")
+}
 func selfTest() {
+    aiAdviceTests()
     uiV4Tests()
     releaseTests()
     assert(mutationError(Data(#"{"ok":false,"message":"login canceled"}"#.utf8)) == "login canceled")
@@ -715,12 +755,15 @@ final class RecommendationStrip: NSView {
     let title = label("ยังแนะนำบัญชีไม่ได้", size: 17, bold: true)
     let reason = label("รีเฟรชเพื่อดูโควตาล่าสุด", size: 13, color: Palette.slate)
     let button = NSButton(title: "รอข้อมูล", target: nil, action: nil)
+    let planButton = NSButton(title: "อ่านแผน AI", target: nil, action: nil)
     init(target: AnyObject, action: Selector) {
         super.init(frame: .zero)
         let surface = Surface(); surface.tint = Palette.ribbon
         surface.translatesAutoresizingMaskIntoConstraints = false; addSubview(surface)
         title.textColor = Palette.ink
-        let top = NSStackView(views: [title, NSView(), button]); top.spacing = 8
+        reason.maximumNumberOfLines = 3; reason.lineBreakMode = .byTruncatingTail
+        planButton.target = target; planButton.action = #selector(AppDelegate.showAIPlan(_:)); planButton.bezelStyle = .rounded; planButton.isHidden = true
+        let top = NSStackView(views: [title, NSView(), planButton, button]); top.spacing = 8
         button.target = target; button.action = action; button.bezelStyle = .rounded; button.bezelColor = Palette.teal; button.isEnabled = false
         let stack = NSStackView(views: [top, reason]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false; addSubview(stack)
@@ -828,6 +871,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var resetValues: [String: (ResetAvailability, Date)] = [:]
     let status = label("กำลังค้นหาบัญชี…", size: 12, color: .secondaryLabelColor)
     let dependencyNotice = label("", size: 12, color: .secondaryLabelColor)
+    var aiAdviceData: Data?
+    let aiButton = NSButton(title: "AI วิเคราะห์", target: nil, action: nil)
     let refreshButton = NSButton(title: "รีเฟรช", target: nil, action: nil)
     let connectButton = NSButton(title: "เชื่อมยอดและเซสชัน", target: nil, action: nil)
     let state = SwitchState()
@@ -875,7 +920,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         connectButton.bezelStyle = .rounded
         let context = NSButton(title: "บริบทกลาง", target: self, action: #selector(openContext))
         context.bezelStyle = .rounded
-        let header = NSStackView(views: [icon, heading, NSView(), refreshButton]); header.spacing = 12
+        aiButton.target = self; aiButton.action = #selector(analyzeAI); aiButton.bezelStyle = .rounded
+        aiButton.toolTip = "ให้ Codex ที่ล็อกอินอยู่ช่วยวางแผนใช้โควตา · เรียกเมื่อกดเท่านั้น"
+        let header = NSStackView(views: [icon, heading, NSView(), aiButton, refreshButton]); header.spacing = 12
         let downloads = NSStackView()
         for (name, url) in [("ดาวน์โหลด Codex", "https://chatgpt.com/codex/"), ("ดาวน์โหลด Claude", "https://claude.com/download")] {
             let button = NSButton(title: name, target: self, action: #selector(download(_:)))
@@ -972,6 +1019,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func updateNotificationHint() { notificationNotice.stringValue = notificationHint(enabled: notificationsEnabled, nativeAllowed: nativeAllowed) }
     @objc func changeStrategy() {
         guard fixtureMode == nil else { return }
+        aiAdviceData = nil
         defaults.set(AccountStrategy.allCases[strategySelector.indexOfSelectedItem].rawValue, forKey: "accountStrategy")
         defaults.set([1, 6, 24, 48][resetHoursSelector.indexOfSelectedItem], forKey: "avoidResetHours")
         updateRecommendations()
@@ -1006,7 +1054,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func evaluateAlerts(provider: String) {
         let now = Date()
         let snapshots = accounts.filter { $0.provider == provider }.compactMap { account in quotaValues[account.id].flatMap { alertSnapshot(id: account.id, value: $0, now: now) } }
-        let winner = strategyWinner(accounts, quota: quotaValues, numbers: displayNumbers, provider: provider, strategy: strategy, now: now)
+        let winner = aiAdviceData.flatMap { validAIAdvice($0, accounts: accounts, quota: quotaValues, now: now)?[provider]?.account } ?? strategyWinner(accounts, quota: quotaValues, numbers: displayNumbers, provider: provider, strategy: strategy, now: now)
         var history = alertHistories[provider] ?? AlertHistory()
         let previousWinner = history.winner
         let thresholds = accounts.filter { $0.provider == provider }.flatMap { account -> [UsageThreshold] in
@@ -1047,7 +1095,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     func updateControls() {
         let busy = state.busy || refreshing || fixtureMode != nil
-        refreshButton.isEnabled = !busy; connectButton.isEnabled = !busy
+        refreshButton.isEnabled = !busy; connectButton.isEnabled = !busy; aiButton.isEnabled = !busy && !accounts.isEmpty
         for (id, row) in rows {
             let provider = accounts.first { $0.id == id }?.provider
             row.switchButton.isEnabled = !busy && (provider == "codex" ? dependencies.codexApp : dependencies.claudeApp)
@@ -1088,6 +1136,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     func updateRecommendations() {
         let now = Date()
+        let advice = aiAdviceData.flatMap { validAIAdvice($0, accounts: accounts, quota: quotaValues, now: now) }
+        if advice == nil { aiAdviceData = nil }
         var values: [String: Recommendation] = [:]
         for account in accounts {
             if let value = quotaValues[account.id], value.error == nil {
@@ -1095,10 +1145,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             } else { values[account.id] = Recommendation(score: nil, hours: nil, reason: "ยังไม่มีข้อมูลที่ใช้แนะนำได้") }
         }
         for provider in ["codex", "claude"] {
-            let winner = strategyWinner(accounts, quota: quotaValues, numbers: displayNumbers, provider: provider, strategy: strategy, now: now)
+            let winner = advice?[provider]?.account ?? strategyWinner(accounts, quota: quotaValues, numbers: displayNumbers, provider: provider, strategy: strategy, now: now)
             if let strip = strips[provider] {
+                strip.planButton.isHidden = advice?[provider] == nil
+                strip.planButton.identifier = NSUserInterfaceItemIdentifier(provider)
                 if let winner, let number = displayNumbers[winner], let value = quotaValues[winner], alertSnapshot(id: winner, value: value, now: now) != nil {
-                    strip.title.stringValue = "แนะนำบัญชี \(number)"
+                    strip.title.stringValue = "กลยุทธ์ · บัญชี \(number)"
                     let base = value.primary.map { "รอบหลัก \(remaining($0.used)) · สัปดาห์ \(remaining(value.weekly?.used))" } ?? "ใช้ข้อมูลรายสัปดาห์ · เหลือ \(remaining(value.weekly?.used))"
                     let comparison: String
                     switch strategy {
@@ -1109,6 +1161,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     strip.reason.stringValue = base + "\n" + comparison
                     strip.button.title = "ใช้บัญชี \(number)"; strip.button.identifier = NSUserInterfaceItemIdentifier(winner)
                     strip.toolTip = "เลือกตามกลยุทธ์ที่ตั้งไว้ ใช้เฉพาะข้อมูลใหม่ภายใน 15 นาที เป็นคำแนะนำโดยประมาณ ไม่ใช่จำนวนโทเคนหรือการเทียบราคา"
+                    if let ai = advice?[provider] {
+                        strip.title.stringValue = "AI · แนะนำบัญชี \(number)"
+                        strip.reason.stringValue = ai.reason + "\nแผน: " + ai.plan
+                        strip.toolTip = "AI วิเคราะห์จาก Codex ที่ล็อกอิน · มีอายุไม่เกิน 15 นาที\n" + ai.reason + "\nแผน: " + ai.plan
+                    }
+                    strip.reason.toolTip = strip.toolTip
+
                 } else {
                     strip.title.stringValue = "ยังแนะนำบัญชีไม่ได้"
                     strip.reason.stringValue = accounts.contains { $0.provider == provider } ? "ต้องมีข้อมูลโควตาล่าสุด · ลองรีเฟรช" : "เพิ่มบัญชีเพื่อเริ่มดูโควตา"
@@ -1123,9 +1182,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         updateControls()
     }
+    @objc func showAIPlan(_ sender: NSButton) {
+        guard let data = aiAdviceData, let provider = sender.identifier?.rawValue,
+              let item = validAIAdvice(data, accounts: accounts, quota: quotaValues, now: Date())?[provider] else { updateRecommendations(); return }
+        let alert = NSAlert(); alert.messageText = "แผน AI · \(provider) บัญชี \(displayNumbers[item.account] ?? 0)"
+        alert.informativeText = item.reason + "\n\n" + item.plan
+        alert.addButton(withTitle: "ปิด"); alert.beginSheetModal(for: window)
+    }
+    @objc func analyzeAI() {
+        guard fixtureMode == nil, !state.busy, !refreshing else { return }
+        aiAdviceData = nil; refreshing = true; updateRecommendations()
+        status.stringValue = "Codex กำลังวิเคราะห์แผนใช้โควตา… อาจใช้เวลาหลายนาที"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let (data, error) = runHelper(["advise"], timeout: 240)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.refreshing = false
+                if let data, validAIAdvice(data, accounts: self.accounts, quota: self.quotaValues, now: Date()) != nil {
+                    self.aiAdviceData = data
+                    self.status.stringValue = "AI วิเคราะห์แล้ว · ตรวจแผนก่อนเลือกสลับบัญชี · รีเฟรชยอดจะล้างผล AI"
+                } else {
+                    self.status.stringValue = error ?? "AI ยังให้ผลที่ใช้ได้ไม่ได้ · ใช้กลยุทธ์ที่เลือกแทน (ไม่ใช่ผล AI)"
+                }
+                self.updateRecommendations()
+            }
+        }
+    }
     @objc func refresh() {
         guard !state.busy, !refreshing else { return }
         if let mode = fixtureMode { renderFixture(mode); return }
+        aiAdviceData = nil
         refreshing = true; refreshGeneration += 1; let generation = refreshGeneration; updateControls()
         status.stringValue = "กำลังค้นหาบัญชีและอ่านโควตา…"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -1195,6 +1281,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let reset = now.addingTimeInterval(Double(number == 2 ? 7200 : 86400 * number))
             quotaValues[account.id] = mode == "no-data" ? QuotaViewData(error: "ข้อมูลตัวอย่าง: ไม่พบโควตา") : QuotaViewData(percent: 100 - used, balance: "0 Credits", resetTime: localDate(ISO8601DateFormatter().string(from: reset)), updated: "ตัวอย่าง", details: "ข้อมูลสังเคราะห์สำหรับตรวจหน้าจอ ไม่มีการเชื่อมต่อหรือสลับบัญชีจริง", weekly: WindowQuota(used: used, reset: reset), primary: WindowQuota(used: number == 1 ? 99 : 40, reset: now.addingTimeInterval(3600)), updatedDate: mode == "stale" ? now.addingTimeInterval(-901) : now, resetCount: 2, resetExpiry: now.addingTimeInterval(86400))
         }
+        if mode == "ai" {
+            aiAdviceData = try? JSONSerialization.data(withJSONObject: ["ok": true, "generatedAt": ISO8601DateFormatter().string(from: now), "recommendations": ["codex", "claude"].map { provider in
+                ["provider": provider, "account": provider + (provider == "codex" ? ":account2" : ":b"), "reason": "ใช้โควตาที่ใกล้หมดรอบก่อน เพื่อให้ยอดที่เหลือเกิดประโยชน์", "plan": "เริ่มงานด้วยบัญชีนี้วันนี้ แล้วตรวจยอดใหม่ก่อนเปลี่ยนไปบัญชีที่มีเวลาคงเหลือมากกว่า"]
+            }])
+        }
         if mode == "denied" { notificationToggle.state = .on; nativeAllowed = false; notice.stringValue = "Codex แนะนำบัญชี 2 · เหลือ 79% · รีเซ็ตใน 2 ชม. (ตัวอย่าง)" }
         updateNotificationHint(); updateRecommendations(); lastRefresh = now
         status.stringValue = "ตัวอย่าง \(mode) · ไม่เชื่อมต่อและไม่สลับบัญชีจริง"
@@ -1248,6 +1339,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc func switchAccount(_ sender: NSButton) {
         guard fixtureMode == nil else { return }
         guard !state.busy, !refreshing, let id = sender.identifier?.rawValue, let account = accounts.first(where: { $0.id == id }) else { return }
+        if strips.values.contains(where: { $0.button === sender }) {
+            updateRecommendations()
+            guard sender.identifier?.rawValue == id else { status.stringValue = "คำแนะนำเปลี่ยนแล้ว · ตรวจข้อมูลล่าสุดก่อนสลับ"; return }
+        }
         let alert = NSAlert(); alert.alertStyle = .warning
         alert.messageText = "สลับไป \(account.provider == "codex" ? "Codex" : "Claude") บัญชี \(displayNumbers[account.id] ?? 0)?"
         alert.informativeText = "\(account.provider == "codex" ? "Codex" : "Claude") ที่กำลังทำงานอาจถูกปิด กรุณาบันทึกงานก่อน ประวัติในเครื่องใช้ร่วมกันภายในบริการตามการตั้งค่า"

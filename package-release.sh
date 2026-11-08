@@ -16,6 +16,7 @@ fi
 "$python_bin" "$source_dir/tests_backend.py"
 mkdir -p "$build_dir/src" "$build_dir/payload"
 cp "$source_dir/backend.py" "$build_dir/src/backend.py"
+cp "$source_dir/ai_advisor.py" "$build_dir/src/ai_advisor.py"
 cp -R "$source_dir/vendor" "$build_dir/src/vendor"
 "$python_bin" -m PyInstaller --noconfirm --onedir --name aiaccounts-helper --paths "$build_dir/src/vendor/claude-switcher" --hidden-import claude_switch --hidden-import cs_config --hidden-import cs_sync --hidden-import cs_share --distpath "$build_dir/frozen" --workpath "$build_dir/work" --specpath "$build_dir" "$build_dir/src/backend.py"
 bash "$source_dir/build-install.sh" --package-only --destination "$build_dir/payload/AI Accounts.app"
