@@ -29,9 +29,10 @@ Copy-Item "$build/switch/LICENSE" "$payload/licenses/codex-switch-MIT.txt"
 Copy-Item "$source/vendor/claude-switcher/LICENSE" "$payload/licenses/claude-switcher-MIT.txt"
 Copy-Item "$source/vendor/licenses/*" "$payload/licenses/"
 Copy-Item "$source/THIRD-PARTY-NOTICES.md", "$source/README-TH.md" $payload
+Copy-Item "$source/docs/manual/AI-Accounts-User-Guide-BDA-TH.pdf" "$payload/AI-Accounts-User-Guide-BDA-TH.pdf"
 & "$payload/backend/aiaccounts-helper.exe" --self-test
 Check-Exit
-$smoke = Start-Process -FilePath "$payload/AI Accounts.exe" -ArgumentList '--self-test' -PassThru
+$smoke = Start-Process -FilePath "$payload/AI Accounts.exe" -ArgumentList '--self-test' -WindowStyle Hidden -PassThru
 if (-not $smoke.WaitForExit(60000)) { Stop-Process -Id $smoke.Id; throw 'Windows GUI smoke timed out after 60 seconds' }
 $smoke.Refresh()
 if (Test-Path "$payload/ai-accounts-selftest-error.log") { Get-Content "$payload/ai-accounts-selftest-error.log" }

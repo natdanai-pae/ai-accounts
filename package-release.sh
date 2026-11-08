@@ -55,6 +55,7 @@ cp "$switch_source/LICENSE" "$resources/licenses/codex-switch-MIT.txt"
 cp "$source_dir/vendor/licenses/"* "$resources/licenses/"
 cp "$source_dir/THIRD-PARTY-NOTICES.md" "$resources/"
 cp "$source_dir/README-TH.md" "$build_dir/payload/README-TH.md"
+cp "$source_dir/docs/manual/AI-Accounts-User-Guide-BDA-TH.pdf" "$build_dir/payload/AI-Accounts-User-Guide-BDA-TH.pdf"
 "$resources/codexbar/Helpers/CodexBarCLI" --version
 "$resources/bin/codex" --version
 "$resources/bin/codex-switch" version --json

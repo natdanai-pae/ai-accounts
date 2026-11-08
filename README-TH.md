@@ -2,7 +2,7 @@
 
 จัดการบัญชี Codex และ Claude หลายบัญชี เพิ่มบัญชีผ่านการเข้าสู่ระบบของผู้ให้บริการ อ่าน quota และแนะนำบัญชีแยกตามผู้ให้บริการโดยไม่สลับอัตโนมัติ รวม helper/runtime มาแล้ว ผู้ใช้ไม่ต้องติดตั้ง Python, Go หรือ Homebrew
 
-> พักการดาวน์โหลดรุ่น Beta ชั่วคราวระหว่างปรับ UX/UI ตามผลตรวจ รุ่นนี้ยังไม่อนุมัติให้เผยแพร่
+> รุ่น Beta สำหรับ macOS Apple Silicon และ Windows x64: ดาวน์โหลดจากหน้า [Releases](https://github.com/natdanai-pae/ai-accounts/releases) พร้อมอ่านข้อจำกัดและตรวจ SHA256 ก่อนใช้งาน ไฟล์ยังไม่มี Developer ID notarization / Windows publisher certificate จึงอาจมีคำเตือนผู้พัฒนาจากระบบปฏิบัติการ
 
 ## คู่มือและผลตรวจล่าสุด
 
