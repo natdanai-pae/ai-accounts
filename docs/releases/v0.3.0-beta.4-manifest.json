@@ -1,0 +1,26 @@
+{
+  "revision": "c57539a3fc4b56c7f8ae2bea1446e349de33d7c5",
+  "runId": 42488355439,
+  "assets": [
+    {
+      "name": "AI-Accounts-0.3.0-beta.4-windows-x64.zip",
+      "bytes": 166102661,
+      "sha256": "d81dd0ab49a07e1bd73e10aa66bd00ab7d6ccdbdc62a3c50f16b98589d3b7bd5"
+    },
+    {
+      "name": "AI-Accounts-0.3.0-beta.4-macos-arm64.zip",
+      "bytes": 128581038,
+      "sha256": "014a0eeed12179acf60b44cee58162781f9cce6f66f4e591cb05975695a39e63"
+    },
+    {
+      "name": "AI-Accounts-0.3.0-beta.4-macos-arm64.dmg",
+      "bytes": 141732141,
+      "sha256": "fce77413ef33b9095ee69f83621fefdd410e1d13461e298c5a1cb0267a13dd14"
+    },
+    {
+      "name": "AI-Accounts-User-Guide-BDA-TH.pdf",
+      "bytes": 991276,
+      "sha256": "3b580178bd32562e52ea4324f92ca7f34934a74d36cdefddea5fbf0e00dfc0c1"
+    }
+  ]
+}
