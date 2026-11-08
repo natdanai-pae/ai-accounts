@@ -330,9 +330,11 @@ class Backend:
                 return str(path)
         raise SafeError('Required bundled tool is missing')
 
-    def run(self, args, timeout=60, output=False, allow_nonzero=False):
+    def run(self, args, timeout=60, output=False, allow_nonzero=False, tool_dir=None):
         env = os.environ.copy()
         env['PATH'] = str(self.resources / 'bin') + ':/usr/bin:/bin:/usr/sbin:/sbin'
+        if tool_dir is not None:
+            env['PATH'] = str(tool_dir) + ':' + env['PATH']
         # Prevent a developer shell override from redirecting account storage.
         for name in ('CODEX_HOME', 'CODEX_SWITCH_HOME', 'CODEX_LOCAL_SWITCH_HOME', 'CS_STATE_DIR', 'CS_DIRS'):
             env.pop(name, None)
@@ -379,7 +381,13 @@ class Backend:
         if not any(row['id'] == provider + ':' + key for row in self.list_accounts()['accounts']):
             raise SafeError('Unknown account')
         if provider == 'codex':
-            self.run([self.executable('codex-switch'), 'switch', key], timeout=120)
+            import macos_codex
+            try:
+                app, cli = macos_codex.select_desktop()
+            except macos_codex.LaunchError as exc:
+                raise SafeError(str(exc)) from exc
+            with macos_codex.switch_tool_dir(app, cli) as directory:
+                self.run([self.executable('codex-switch'), 'switch', key], timeout=120, tool_dir=directory)
         else:
             switcher = self.claude_modules()
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
