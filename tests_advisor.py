@@ -124,3 +124,26 @@ class AdvisorTests(unittest.TestCase):
         snapshot,mapping = build_snapshot(accounts,rows,now)
         self.assertEqual(snapshot['accounts'][0]['number'], 2)
         self.assertEqual(mapping['candidate1'], 'codex:2')
+
+    def test_advice_returns_its_fresh_account_and_quota_snapshot_for_immediate_display(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from ai_advisor import advise
+        now = datetime.now(timezone.utc)
+        accounts = [{'id':'codex:1','provider':'codex','email':'private@synthetic.invalid'}]
+        rows = [{'provider':'codex','usage':{'accountEmail':accounts[0]['email'],'updatedAt':now.isoformat(),
+                 'secondary':{'usedPercent':78,'resetsAt':(now+timedelta(hours=36)).isoformat()}}}]
+        calls = []
+        def usage(provider):
+            calls.append(provider)
+            return rows if provider == 'codex' else []
+        answer = {'recommendations':[{'provider':'codex','account':'candidate1','reason':'ใช้ก่อนรีเซ็ต','plan':'ใช้วันนี้'}]}
+        with tempfile.TemporaryDirectory() as tmp, patch('ai_advisor.infer', return_value=answer):
+            backend=SimpleNamespace(state=Path(tmp),root=Path(tmp),list_accounts=lambda:{'accounts':accounts},usage=usage)
+            result=advise(backend)
+        self.assertEqual(result.get('accounts'), accounts)
+        self.assertEqual(result.get('usage'), {'codex':rows,'claude':[]})
+        self.assertCountEqual(calls,['codex','claude'])
+        self.assertEqual(result['recommendations'][0]['account'],'codex:1')

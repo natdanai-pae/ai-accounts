@@ -108,6 +108,38 @@ def ai_consistent_alerts(alerts, advice):
             result.append(dict(usage_events[0], also=usage_events[1:], recommendedAccount=ai['account']))
     return result
 
+def callback_error_trace(error_type, tb):
+    import traceback
+    # Frame locations only: no local variables, source text, or exception payload.
+    frames = traceback.extract_tb(tb)
+    return datetime.now(timezone.utc).isoformat() + '\n' + '\n'.join(
+        f'{frame.filename}:{frame.lineno} in {frame.name}' for frame in frames
+    ) + '\n' + error_type.__name__ + '\n'
+
+def account_busy_message(state):
+    return ('กำลังโหลดข้อมูลบัญชีและโควตาเริ่มต้น · รอให้เสร็จแล้วกด AI วิเคราะห์อีกครั้ง'
+            if not state.get('accounts') else 'กำลังทำรายการก่อนหน้าอยู่ · รอผลก่อนเริ่มรายการใหม่')
+
+def run_ai_work(invoke, reset_statuses):
+    """Use the helper's already-fresh snapshot; never delay AI behind more reads."""
+    try:
+        reply = invoke(['advise'])
+        if not isinstance(reply, dict) or reply.get('ok') is not True:
+            raise ValueError('Invalid AI response')
+        accounts = parse_accounts(reply)
+        source = reply.get('usage')
+        if not isinstance(source, dict) or any(not isinstance(source.get(p), list) for p in ('codex', 'claude')):
+            raise ValueError('Missing AI quota snapshot')
+        usage = {p: source[p] for p in ('codex', 'claude')}
+        usage['_resetStatuses'] = dict(reset_statuses)
+        return accounts, usage, {'text': 'AI วิเคราะห์เสร็จแล้ว', 'details': '', 'aiAdvice': reply}
+    except RuntimeError as error:
+        # invoke only raises helper-owned, sanitized SafeError messages.
+        details = str(error)[:300] + '\n\nแก้ไขตามข้อความข้างต้น แล้วกด AI วิเคราะห์อีกครั้ง'
+    except Exception:
+        details = 'AI ยังไม่ส่งผลพร้อมข้อมูลโควตาที่ใช้ได้ หรือหมดเวลา · กดวิเคราะห์ใหม่ หากเกิดซ้ำให้ตรวจการเข้าสู่ระบบและรุ่นแอป'
+    return None, None, {'text': 'AI วิเคราะห์ไม่สำเร็จ · คลิกเพื่อดูรายละเอียด', 'details': details, 'showError': True}
+
 def begin_account_work(state):
     if state['busy']:
         return False
@@ -383,6 +415,19 @@ def main():
     events = queue.Queue()
     state = {'busy': False, 'accounts': [], 'usage': {}, 'resetStatuses': {}, 'lastRefresh': 0, 'lastPaint': 0}
     private_dir = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / 'AppData/Local'))) / 'AI Accounts'
+    def callback_failed(error_type, error, tb):
+        saved = False
+        if not synthetic:
+            try:
+                private_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                (private_dir / 'ui-error.log').write_text(callback_error_trace(error_type, tb), encoding='utf-8')
+                saved = True
+            except OSError:
+                pass
+        messagebox.showerror('หน้าจอทำงานไม่สำเร็จ', 'เกิดข้อผิดพลาดในหน้าจอ AI Accounts\n' +
+                             ('บันทึกตำแหน่งข้อผิดพลาดไว้ที่ ' + str(private_dir / 'ui-error.log') if saved else 'ไม่สามารถบันทึกข้อมูลวินิจฉัยได้') +
+                             '\nไม่มีการแสดงข้อมูลบัญชีหรือข้อความลับในรายงานนี้', parent=root)
+    root.report_callback_exception = callback_failed
     preferences_path = private_dir / 'ui-preferences.json'
     preferences = {'numbers': {}, 'alerts': {}, 'notifications': False, 'strategy': 'rate', 'avoidResetHours': 48}
     try:
@@ -421,6 +466,7 @@ def main():
     status_label.bind('<Button-1>', lambda e: messagebox.showinfo('สถานะล่าสุด', state.get('lastError') or status.get(), parent=root))
     ttk.Button(toolbar, text='รีเฟรช', command=lambda: work(['list'])).pack(side='right')
     ttk.Button(toolbar, text='AI วิเคราะห์', command=lambda: work(['advise'])).pack(side='right', padx=dp((0, 7)))
+    ai_progress = ttk.Progressbar(heading_copy, mode='indeterminate', length=dp(180))
     actions = ttk.Frame(sidebar, style='Side.TFrame')
     actions.pack(fill='x')
     notice = tk.StringVar(value='ตัวอย่างข้อมูลจำลอง • ไม่เชื่อมบัญชีจริงและไม่บันทึกการตั้งค่า' if preview else 'เลือกบัญชีได้เองทุกครั้ง • รีเฟรชโควตาอัตโนมัติทุก 5 นาที')
@@ -486,14 +532,23 @@ def main():
             status.set('ข้อมูลจำลองเท่านั้น • ไม่มีการเรียกผู้ให้บริการ')
             return
         if not begin_account_work(state):
-            status.set('กำลังทำรายการก่อนหน้าอยู่ · รอผลก่อนเริ่มรายการใหม่')
+            status.set(account_busy_message(state))
             return
-        render()
+        try:
+            render()
+        except Exception:
+            state['busy'] = False  # No helper has started yet.
+            raise
         state['lastRefresh'] = time.time()
         status.set('กำลังทำงาน… หากมีหน้าต่างเข้าสู่ระบบ ให้ทำขั้นตอนให้เสร็จและเปิดแอปนี้ไว้')
         if args[0] == 'advise':
             status.set('Codex AI กำลังวิเคราะห์โควตาและเวลารีเซ็ต · อาจใช้เวลาถึง 4 นาที')
+            ai_progress.pack(anchor='w', pady=dp((6, 0)))
+            ai_progress.start(12)
         def run():
+            if args[0] == 'advise':
+                events.put(run_ai_work(invoke, state['resetStatuses']))
+                return
             try:
                 result = invoke(args)
                 accounts = parse_accounts(invoke(['list']))
@@ -745,12 +800,11 @@ def main():
                     reason_label.pack(anchor='w', fill='x')
                     reason_label.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(dp(160), e.width)))
 
-    def poll():
+    def poll_once():
         try:
             accounts, usage, message = events.get_nowait()
             if accounts == 'notification':
                 notice.set(message)
-                root.after(100, poll)
                 return
             if accounts == 'reset-status':
                 account, reset_status = usage, message
@@ -776,9 +830,10 @@ def main():
                     work(command)
                 else:
                     status.set('ไม่ได้ส่งคำขอเพิ่มเติม')
-                root.after(100, poll)
                 return
             state['busy'] = False
+            ai_progress.stop()
+            ai_progress.pack_forget()
             if accounts is not None:
                 apply_account_snapshot(state, accounts, usage, message)
                 preferences['numbers'] = stable_numbers(accounts, preferences['numbers'])
@@ -814,7 +869,12 @@ def main():
                 status.set(message)
         except queue.Empty:
             pass
-        root.after(100, poll)
+
+    def poll():
+        try:
+            poll_once()
+        finally:
+            root.after(100, poll)
 
     def sync_sessions():
         if not state['busy']:

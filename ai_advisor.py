@@ -167,4 +167,8 @@ def advise(backend):
             numbers = {}
         snapshot, mapping = build_snapshot(accounts, rows, datetime.now(timezone.utc), numbers)
         answer = infer(backend, snapshot)
-        return validate_answer(answer, snapshot, mapping, datetime.now(timezone.utc))
+        result = validate_answer(answer, snapshot, mapping, datetime.now(timezone.utc))
+        result['accounts'] = accounts
+        result['usage'] = {provider: [row for row in rows if row.get('provider') == provider]
+                           for provider in ('codex', 'claude')}
+        return result

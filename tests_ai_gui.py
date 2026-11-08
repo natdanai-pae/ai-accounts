@@ -3,6 +3,45 @@ from datetime import datetime, timezone, timedelta
 
 
 class AIAdviceTests(unittest.TestCase):
+    def test_callback_diagnostic_keeps_stack_without_exception_payload(self):
+        from windows_gui import callback_error_trace
+        try:
+            raise ValueError('private-token@example.com')
+        except ValueError as error:
+            text = callback_error_trace(type(error), error.__traceback__)
+        self.assertIn('ValueError', text)
+        self.assertIn('test_callback_diagnostic', text)
+        self.assertNotIn('private-token', text)
+
+    def test_ai_worker_returns_snapshot_without_followup_helpers(self):
+        from windows_gui import run_ai_work
+        reply = dict(self.reply, accounts=self.accounts, usage={'codex': [], 'claude': []})
+        calls = []
+        def invoke(args):
+            calls.append(args)
+            self.assertEqual(args, ['advise'], 'AI response must not wait for list, usage, or reset-status')
+            return reply
+        resets = {'codex:a': {'supported': True}}
+        accounts, usage, message = run_ai_work(invoke, resets)
+        self.assertEqual(calls, [['advise']])
+        self.assertEqual(accounts, self.accounts)
+        self.assertEqual(usage['_resetStatuses'], resets)
+        self.assertEqual(message['aiAdvice'], reply)
+        self.assertNotIn('_resetStatuses', reply['usage'])
+
+    def test_ai_worker_safe_error_is_actionable_and_invalid_snapshot_fails(self):
+        from windows_gui import run_ai_work, account_busy_message
+        def fail(args):
+            raise RuntimeError('Codex session expired: sign in again')
+        accounts, usage, message = run_ai_work(fail, {})
+        self.assertIsNone(accounts)
+        self.assertIsNone(usage)
+        self.assertIn('session expired', message['details'])
+        self.assertTrue(message['showError'])
+        self.assertIsNone(run_ai_work(lambda args: self.reply, {})[0])
+        self.assertIn('ข้อมูลบัญชี', account_busy_message({'accounts': []}))
+        self.assertIn('รอ', account_busy_message({'accounts': self.accounts}))
+
     def test_result_sections_separate_full_provider_answers(self):
         import copy
         from windows_gui import ai_result_sections
