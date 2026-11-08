@@ -12,6 +12,7 @@ python -m PyInstaller --noconfirm --onedir --windowed --name 'AI Accounts' --man
 Check-Exit
 $payload = Join-Path $build 'frozen/AI Accounts'
 Copy-Item -Recurse "$build/frozen/aiaccounts-helper" "$payload/backend"
+Copy-Item -Recurse "$source/skills" "$payload/skills"
 New-Item -ItemType Directory -Force "$payload/bin", "$payload/licenses", "$payload/assets" | Out-Null
 Copy-Item "$source/assets/AppIcon.png" "$payload/assets/"
 Invoke-WebRequest 'https://codeload.github.com/ScWen7/CodexSwitch/tar.gz/65469fc42160ae89a16c8829dd9babe2950d569e' -OutFile "$build/switch.tar.gz"

@@ -76,6 +76,9 @@ class AdvisorTests(unittest.TestCase):
             self.assertIn('shell_tool', args)
             self.assertIn('multi_agent', args)
             self.assertNotIn('shell', kwargs)
+            skill = Path(__file__).parent / 'skills/ai-quota-value/SKILL.md'
+            self.assertTrue(skill.is_file(), 'quota-value skill must ship with the advisor')
+            self.assertIn(skill.read_text(encoding='utf-8'), prompt)
             Path(args[args.index('--output-last-message') + 1]).write_text('{"recommendations":[]}', encoding='utf-8')
             return subprocess.CompletedProcess(args, 0)
         with tempfile.TemporaryDirectory() as tmp, patch('ai_advisor.subprocess.run', side_effect=run):
@@ -90,3 +93,34 @@ class AdvisorTests(unittest.TestCase):
         result = validate_answer(reply, snapshot, mapping, now)
         self.assertNotIn('candidate', result['recommendations'][0]['reason'])
         with self.assertRaises(SafeError): validate_answer(reply, snapshot, mapping, now + timedelta(minutes=16))
+
+    def test_daily_pace_is_a_percentage_point_target_not_a_prediction(self):
+        (snapshot, _), _ = self.snapshot()
+        weekly = snapshot['accounts'][0]['windows'][0]
+        self.assertEqual(weekly.get('daysUntilReset'), 1.5)
+        self.assertAlmostEqual(weekly.get('dailyUseToFinishPercent', -1), 17.333, places=3)
+        self.assertAlmostEqual(snapshot['accounts'][1]['windows'][0].get('dailyUseToFinishPercent', -1), 20, places=3)
+
+    def test_missing_bundled_skill_stops_inference_instead_of_silently_downgrading(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from ai_advisor import infer
+        from backend import SafeError
+        (snapshot, _), _ = self.snapshot()
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = SimpleNamespace(root=Path(tmp), resources=Path(tmp), executable=lambda _: 'missing-codex')
+            with self.assertRaisesRegex(SafeError, 'skill'):
+                infer(backend, snapshot)
+
+    def test_excluded_account_does_not_renumber_remaining_accounts(self):
+        from ai_advisor import build_snapshot
+        now = datetime(2026, 11, 8, tzinfo=timezone.utc)
+        accounts = [{'id': 'codex:1', 'provider':'codex', 'email':'blocked@synthetic.invalid'},
+                    {'id': 'codex:2', 'provider':'codex', 'email':'ready@synthetic.invalid'}]
+        rows = [{'provider':'codex','usage':{'accountEmail':a['email'],'updatedAt':now.isoformat(),
+                'secondary':{'usedPercent':used,'resetsAt':(now+timedelta(hours=48)).isoformat()}}}
+                for a,used in zip(accounts,[100,30])]
+        snapshot,mapping = build_snapshot(accounts,rows,now)
+        self.assertEqual(snapshot['accounts'][0]['number'], 2)
+        self.assertEqual(mapping['candidate1'], 'codex:2')

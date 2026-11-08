@@ -52,3 +52,13 @@ The tested PC showed the cached sender caption `AI Accounts.before-notifications
 - Existing public releases do not yet include this advisor. The Windows notification sender-caption correction remains a separate unfinished item.
 
 Regression suite: 86 tests passed, one Windows-only PowerShell check skipped on Mac. No real reset-credit redemption or account switch was performed for this advisor change.
+
+## Quota-value skill and separated answers follow-up
+
+- Bundled `skills/ai-quota-value/SKILL.md` is explicitly injected on every analysis; missing skill fails before inference. Mac and Windows package scripts now copy it into application resources. No generic global skill installation is relied on.
+- Deterministic remaining-per-day figures are planning targets. AI weighs expiry, all supplied windows, continuity, backups and switching conditions separately within each provider; no currency ROI is claimed without actual fees and useful workload.
+- Matched synthetic before/after evaluation used observed `gpt-6-astra`, reasoning effort `none`, Mac CLI0.157.1; both stages selected correct provider-specific accounts. New answers include correct daily targets and actionable conditions. Results and limitations are under `docs/evaluation/quota-value-v1/`. A regression exposed and fixed fallback numbering after excluding unavailable accounts. Other model IDs are untested.
+- 91 Python tests passed on Mac with one Windows-only check skipped.17 advisor/answer tests passed on Windows Python3.11. Windows source live inference with bundled CLI0.167.0 returned separate Codex/Claude recommendations using the skill; exact Windows model was not captured. Native frozen Windows GUI of this revision is not installed/visually verified.
+- Full Mac bundle built, strict code-sign verification and bundled skill checksum passed. Installed at the existing application path after normal app quit; previous complete bundle retained under `/Users/maripae/Backups/AI-Accounts-before-value-skill-20261108-204010/previous.app`.
+- Real installed Mac AI button automatically opened a readable results window with separate selectable/scrollable Codex and Claude answers. Live result: Codex1 weekly21%, reset39.66h, target12.71 weekly percentage points/day; Claude3 weekly94%, reset26.304h, target85.77 points/day. Both acknowledged missing short-window information and unknown monetary ROI. Native rendered result showed full text without clipping. No account switch or reset redemption was triggered. App left open on those answers.
+- Prior public downloadable releases remain unchanged. Notification sender-caption repair remains separately unfinished; DND and provider auth/session files were not changed in this follow-up.

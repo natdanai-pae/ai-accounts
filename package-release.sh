@@ -22,6 +22,7 @@ cp -R "$source_dir/vendor" "$build_dir/src/vendor"
 bash "$source_dir/build-install.sh" --package-only --destination "$build_dir/payload/AI Accounts.app"
 resources="$build_dir/payload/AI Accounts.app/Contents/Resources"
 cp -R "$build_dir/frozen/aiaccounts-helper" "$resources/backend"
+cp -R "$source_dir/skills" "$resources/skills"
 mkdir -p "$resources/bin" "$resources/codexbar" "$resources/licenses"
 switch_source="${AI_ACCOUNTS_SWITCH_SOURCE:-$HOME/.local/share/codex-switch-source}"
 if [[ ! -f "$switch_source/go.mod" ]]; then

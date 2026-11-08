@@ -448,6 +448,17 @@ func validAIAdvice(_ data: Data, accounts: [Account], quota: [String: QuotaViewD
     }
     return result
 }
+struct AIAnswerSection {
+    let provider: String
+    let title: String
+    let body: String
+}
+func aiAnswerSections(_ advice: [String: AIAdvice], numbers: [String: Int]) -> [AIAnswerSection] {
+    ["codex", "claude"].compactMap { provider in
+        guard let item = advice[provider] else { return nil }
+        return AIAnswerSection(provider: provider, title: "\(provider == "codex" ? "Codex" : "Claude") · บัญชี \(numbers[item.account] ?? 0)", body: "เหตุผลที่เลือก\n\(item.reason)\n\nแผนใช้โควตา\n\(item.plan)")
+    }
+}
 func aiAdviceTests() {
     let now = Date(timeIntervalSince1970: 1800000000)
     let account = Account(id: "codex:a", provider: "codex", key: "a", label: "", email: nil, usageAccount: nil)
@@ -468,6 +479,14 @@ func aiAdviceTests() {
     var duplicate = try! JSONSerialization.jsonObject(with: payload()) as! [String: Any]
     let items = duplicate["recommendations"] as! [[String: Any]]; duplicate["recommendations"] = items + items
     assert(validAIAdvice(try! JSONSerialization.data(withJSONObject: duplicate), accounts: [account], quota: quota, now: now) == nil)
+    let separate = aiAnswerSections([
+        "claude": AIAdvice(provider: "claude", account: "claude:b", reason: "เหตุผล Claude", plan: "CLAUDE_ONLY\nใช้วันละ 24 จุดเปอร์เซ็นต์"),
+        "codex": AIAdvice(provider: "codex", account: "codex:a", reason: "เหตุผล Codex", plan: "CODEX_ONLY\nตรวจยอดก่อนเปลี่ยน")
+    ], numbers: ["codex:a": 1, "claude:b": 2])
+    assert(separate.map(\.title) == ["Codex · บัญชี 1", "Claude · บัญชี 2"])
+    assert(separate[0].body.contains("CODEX_ONLY") && !separate[0].body.contains("CLAUDE_ONLY"))
+    assert(separate[1].body.contains("CLAUDE_ONLY") && separate[1].body.contains("24 จุดเปอร์เซ็นต์"))
+    assert(aiAnswerSections([:], numbers: [:]).isEmpty)
     print("PASS: AI advice normal response, malformed/unknown/cross-provider/duplicate rejection, stale/future/empty/exhausted quota guards")
 }
 func selfTest() {
@@ -860,6 +879,51 @@ func shortDate(_ date: Date) -> String {
     return formatter.string(from: date)
 }
 
+final class AIAnswersWindow: NSWindowController {
+    let answerScrolls: [NSScrollView]
+    init(sections: [AIAnswerSection]) {
+        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: sections.count > 1 ? 920 : 560, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        panel.title = "คำตอบ AI · แผนใช้โควตา"
+        panel.minSize = NSSize(width: sections.count > 1 ? 780 : 460, height: 400)
+        panel.isReleasedWhenClosed = false
+        panel.backgroundColor = Palette.canvas
+        var scrolls: [NSScrollView] = []
+        let columns = NSStackView(); columns.orientation = .horizontal; columns.spacing = 20; columns.distribution = .fillEqually; columns.alignment = .top
+        for section in sections {
+            let heading = label(section.title, size: 22, color: Palette.ink, bold: true)
+            let subtitle = label("คำตอบสำหรับ " + (section.provider == "codex" ? "Codex" : "Claude"), size: 12, color: Palette.slate)
+            let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = false; scroll.borderType = .noBorder; scroll.drawsBackground = false
+            let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 400))
+            text.isEditable = false; text.isSelectable = true; text.isRichText = false
+            text.font = .systemFont(ofSize: 15); text.textColor = Palette.ink; text.backgroundColor = Palette.canvas
+            text.textContainerInset = NSSize(width: 10, height: 12)
+            text.isVerticallyResizable = true; text.isHorizontallyResizable = false; text.autoresizingMask = [.width]
+            text.textContainer?.widthTracksTextView = true
+            text.textContainer?.containerSize = NSSize(width: 400, height: CGFloat.greatestFiniteMagnitude)
+            text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+            text.string = section.body
+            text.setAccessibilityLabel(section.title + " คำตอบ AI ฉบับเต็ม")
+            scroll.documentView = text; scrolls.append(scroll)
+            let column = NSStackView(views: [heading, subtitle, scroll]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
+            columns.addArrangedSubview(column)
+            scroll.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+            column.heightAnchor.constraint(equalTo: columns.heightAnchor).isActive = true
+        }
+        let heading = label("ใช้ยอดที่เหลือให้ทันรอบรีเซ็ต", size: 24, color: Palette.ink, bold: true)
+        let footnote = label("คำตอบจาก Codex · เปอร์เซ็นต์เป็นสัดส่วนโควตา ไม่ใช่เงินหรือจำนวนโทเคน\nอ่านแผนแล้วกลับหน้าหลักเพื่อเลือกบัญชี · ไม่มีการสลับหรือใช้สิทธิ์รีเซ็ตอัตโนมัติ", size: 12, color: Palette.slate)
+        let content = panel.contentView!
+        for view in [heading, columns, footnote] { view.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(view) }
+        NSLayoutConstraint.activate([
+            heading.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24), heading.topAnchor.constraint(equalTo: content.topAnchor, constant: 24), heading.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
+            columns.leadingAnchor.constraint(equalTo: heading.leadingAnchor), columns.trailingAnchor.constraint(equalTo: heading.trailingAnchor), columns.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 24), columns.bottomAnchor.constraint(equalTo: footnote.topAnchor, constant: -20),
+            footnote.leadingAnchor.constraint(equalTo: heading.leadingAnchor), footnote.trailingAnchor.constraint(equalTo: heading.trailingAnchor), footnote.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20)
+        ])
+        answerScrolls = scrolls
+        super.init(window: panel)
+        panel.center()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+}
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var window: NSWindow!
     var rows: [String: AccountRow] = [:]
@@ -871,7 +935,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var resetValues: [String: (ResetAvailability, Date)] = [:]
     let status = label("กำลังค้นหาบัญชี…", size: 12, color: .secondaryLabelColor)
     let dependencyNotice = label("", size: 12, color: .secondaryLabelColor)
-    var aiAdviceData: Data?
+    var aiAnswersWindow: AIAnswersWindow?
+    var aiAdviceData: Data? { didSet { if aiAdviceData == nil { aiAnswersWindow?.close(); aiAnswersWindow = nil } } }
     let aiButton = NSButton(title: "AI วิเคราะห์", target: nil, action: nil)
     let refreshButton = NSButton(title: "รีเฟรช", target: nil, action: nil)
     let connectButton = NSButton(title: "เชื่อมยอดและเซสชัน", target: nil, action: nil)
@@ -1182,13 +1247,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         updateControls()
     }
-    @objc func showAIPlan(_ sender: NSButton) {
-        guard let data = aiAdviceData, let provider = sender.identifier?.rawValue,
-              let item = validAIAdvice(data, accounts: accounts, quota: quotaValues, now: Date())?[provider] else { updateRecommendations(); return }
-        let alert = NSAlert(); alert.messageText = "แผน AI · \(provider) บัญชี \(displayNumbers[item.account] ?? 0)"
-        alert.informativeText = item.reason + "\n\n" + item.plan
-        alert.addButton(withTitle: "ปิด"); alert.beginSheetModal(for: window)
+    func showAIAnswers(provider: String? = nil) {
+        guard let data = aiAdviceData, let advice = validAIAdvice(data, accounts: accounts, quota: quotaValues, now: Date()) else { updateRecommendations(); return }
+        let sections = aiAnswerSections(advice, numbers: displayNumbers).filter { provider == nil || $0.provider == provider }
+        guard !sections.isEmpty else { return }
+        aiAnswersWindow?.close()
+        aiAnswersWindow = AIAnswersWindow(sections: sections)
+        aiAnswersWindow?.showWindow(nil)
+        aiAnswersWindow?.window?.makeKeyAndOrderFront(nil)
     }
+    @objc func showAIPlan(_ sender: NSButton) { showAIAnswers(provider: sender.identifier?.rawValue) }
     @objc func analyzeAI() {
         guard fixtureMode == nil, !state.busy, !refreshing else { return }
         aiAdviceData = nil; refreshing = true; updateRecommendations()
@@ -1200,6 +1268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self.refreshing = false
                 if let data, validAIAdvice(data, accounts: self.accounts, quota: self.quotaValues, now: Date()) != nil {
                     self.aiAdviceData = data
+                    self.showAIAnswers()
                     self.status.stringValue = "AI วิเคราะห์แล้ว · ตรวจแผนก่อนเลือกสลับบัญชี · รีเฟรชยอดจะล้างผล AI"
                 } else {
                     self.status.stringValue = error ?? "AI ยังให้ผลที่ใช้ได้ไม่ได้ · ใช้กลยุทธ์ที่เลือกแทน (ไม่ใช่ผล AI)"
@@ -1289,6 +1358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if mode == "denied" { notificationToggle.state = .on; nativeAllowed = false; notice.stringValue = "Codex แนะนำบัญชี 2 · เหลือ 79% · รีเซ็ตใน 2 ชม. (ตัวอย่าง)" }
         updateNotificationHint(); updateRecommendations(); lastRefresh = now
         status.stringValue = "ตัวอย่าง \(mode) · ไม่เชื่อมต่อและไม่สลับบัญชีจริง"
+        if mode == "ai" { showAIAnswers() }
     }
     func mutation(_ arguments: [String], timeout: TimeInterval, alreadyBusy: Bool = false, prefix: String = "") {
         guard fixtureMode == nil else { return }
@@ -1412,6 +1482,17 @@ if CommandLine.arguments.contains("--layout-test") {
             assert(frame.minX >= 0 && frame.maxX <= row.bounds.width + 0.5, "quota progress must stay inside account card: \(frame), row \(row.bounds)")
         }
     }
+    let answerTest = AIAnswersWindow(sections: ["codex", "claude"].map { AIAnswerSection(provider: $0, title: $0 == "codex" ? "Codex" : "Claude", body: String(repeating: "แผนฉบับเต็ม \($0) ใช้โควตาวันละ 24 จุดเปอร์เซ็นต์\n", count: 30)) })
+    answerTest.window!.contentView!.layoutSubtreeIfNeeded()
+    assert(answerTest.answerScrolls.count == 2)
+    for scroll in answerTest.answerScrolls {
+        assert(scroll.bounds.width > 250 && scroll.bounds.height > 250)
+        let text = scroll.documentView as! NSTextView
+        text.layoutManager!.ensureLayout(for: text.textContainer!)
+        assert(text.layoutManager!.usedRect(for: text.textContainer!).height > scroll.contentSize.height, "long answers must remain scrollable")
+        assert(text.string.contains("24 จุดเปอร์เซ็นต์"))
+    }
+    print("PASS: separate provider answers preserve full content with independent scroll viewports")
     print("PASS: progress frame containment with primary present/absent transitions")
     exit(0)
 }

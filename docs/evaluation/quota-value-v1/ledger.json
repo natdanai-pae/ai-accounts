@@ -1,0 +1,64 @@
+{
+  "skillSHA256": "86c21d367ff8f509c3d19ea85a69fefe4001f3ced6a925626e646637c1bb0093",
+  "baselineRevision": "027b05f",
+  "tokenCounts": "unknown; CLI stderr token totals are not separated into input/output",
+  "retryCount": 0,
+  "runs": [
+    {
+      "case": "expiry",
+      "stage": "before",
+      "seconds": 13.86,
+      "metadata": {
+        "model": "gpt-6-astra",
+        "reasoning effort": "none"
+      },
+      "choices": [
+        "codex:1",
+        "claude:2"
+      ],
+      "choicePass": true
+    },
+    {
+      "case": "short-block",
+      "stage": "before",
+      "seconds": 14.25,
+      "metadata": {
+        "model": "gpt-6-astra",
+        "reasoning effort": "none"
+      },
+      "choices": [
+        "codex:2",
+        "claude:1"
+      ],
+      "choicePass": true
+    },
+    {
+      "case": "expiry",
+      "stage": "after",
+      "seconds": 20.95,
+      "metadata": {
+        "model": "gpt-6-astra",
+        "reasoning effort": "none"
+      },
+      "choices": [
+        "codex:1",
+        "claude:2"
+      ],
+      "choicePass": true
+    },
+    {
+      "case": "short-block",
+      "stage": "after",
+      "seconds": 15.89,
+      "metadata": {
+        "model": "gpt-6-astra",
+        "reasoning effort": "none"
+      },
+      "choices": [
+        "codex:2",
+        "claude:1"
+      ],
+      "choicePass": true
+    }
+  ]
+}

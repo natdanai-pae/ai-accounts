@@ -83,6 +83,18 @@ def validated_ai_advice(reply, accounts, values, now=None):
         result[provider] = dict(row, source='AI · Codex', generatedAt=reply['generatedAt'])
     return result
 
+def ai_result_sections(reply, accounts, values, numbers, now=None):
+    advice = validated_ai_advice(reply, accounts, values, now)
+    sections = []
+    for provider in ('codex', 'claude'):
+        item = advice.get(provider)
+        text = 'ยังไม่มีคำแนะนำ AI ที่ใช้ได้สำหรับผู้ให้บริการนี้\nตรวจโควตาและกด AI วิเคราะห์ใหม่'
+        if item:
+            text = ('บัญชี ' + str(numbers.get(item['account'], '—')) + '\n\nเหตุผล\n' + item['reason']
+                    + '\n\nแผนการใช้โควตา\n' + item['plan'] + '\n\nวิเคราะห์เมื่อ ' + item['generatedAt'])
+        sections.append({'provider': provider, 'title': provider.title(), 'text': text})
+    return sections
+
 def ai_consistent_alerts(alerts, advice):
     """Keep quota-threshold facts without announcing a competing formula winner."""
     result = []
@@ -595,6 +607,36 @@ def main():
         lines.append('เลือกบัญชีที่รอบหลักเหลืออย่างน้อย 20% และรายสัปดาห์อย่างน้อย 10% ก่อนเมื่อมีตัวเลือก จากนั้นเลือกโควตารายสัปดาห์ที่ควรใช้ก่อนรีเซ็ต ไม่เปรียบเทียบข้ามผู้ให้บริการ ไม่ใช่จำนวนโทเคน และไม่สลับบัญชีอัตโนมัติ')
         messagebox.showinfo('รายละเอียดบัญชี', '\n\n'.join(lines), parent=root)
 
+    def show_ai_results(provider=None):
+        sections = ai_result_sections(state.get('aiAdvice'), state['accounts'], values_by_account(), preferences['numbers'])
+        if provider:
+            sections = [section for section in sections if section['provider'] == provider]
+        dialog = tk.Toplevel(root)
+        dialog.title((provider.title() + ' · ' if provider else '') + 'ผลวิเคราะห์โควตา AI')
+        dialog.transient(root)
+        dialog.geometry(f'{dp(740)}x{dp(640)}')
+        dialog.minsize(dp(440), dp(350))
+        frame = ttk.Frame(dialog, padding=dp(18))
+        frame.pack(fill='both', expand=True)
+        ttk.Label(frame, text='ผลวิเคราะห์แยกตามผู้ให้บริการ', font=('Leelawadee UI', 15, 'bold')).pack(anchor='w')
+        ttk.Label(frame, text='วิเคราะห์โดย Codex AI · ข้อมูล ณ เวลาที่ระบุ · ไม่มีการสลับบัญชีจากหน้าต่างนี้', wraplength=dp(680), style='Muted.TLabel').pack(anchor='w', pady=dp((4, 12)))
+        reading = ttk.Frame(frame)
+        reading.pack(fill='both', expand=True)
+        scroll = ttk.Scrollbar(reading)
+        scroll.pack(side='right', fill='y')
+        text = tk.Text(reading, wrap='word', font=('Leelawadee UI', 11), background=colors['card'], foreground=colors['ink'],
+                       relief='flat', padx=dp(14), pady=dp(12), spacing3=dp(6), yscrollcommand=scroll.set)
+        text.pack(fill='both', expand=True)
+        scroll.configure(command=text.yview)
+        text.tag_configure('provider', font=('Segoe UI', 17, 'bold'), foreground=colors['teal'], spacing1=dp(8), spacing3=dp(10))
+        for section in sections:
+            text.insert('end', section['title'] + '\n', 'provider')
+            text.insert('end', section['text'] + '\n\n')
+        text.configure(state='disabled')
+        ttk.Button(frame, text='ปิด', command=dialog.destroy).pack(anchor='e', pady=dp((12, 0)))
+        dialog.bind('<Escape>', lambda event: dialog.destroy())
+        text.focus_set()
+
     def render():
         state['lastPaint'] = time.time()
         values = values_by_account()
@@ -635,7 +677,7 @@ def main():
                     ai_actions = ttk.Frame(ribbon, style='Ribbon.TFrame')
                     ai_actions.pack(fill='x', pady=dp((5, 0)))
                     ttk.Button(ai_actions, text='ใช้บัญชีที่ AI แนะนำ', command=lambda a=winner: switch_ai(a)).pack(side='left')
-                    ttk.Button(ai_actions, text='เหตุผล / แผน AI', command=lambda a=advice: messagebox.showinfo('AI · Codex · แผนการใช้โควตา', a['reason'] + '\n\n' + a['plan'] + '\n\nวิเคราะห์เมื่อ ' + a['generatedAt'], parent=root)).pack(side='right')
+                    ttk.Button(ai_actions, text='เหตุผล / แผน AI', command=lambda p=provider: show_ai_results(p)).pack(side='right')
             else:
                 ttk.Label(ribbon, text='ยังไม่มีบัญชีที่แนะนำ', style='Ribbon.TLabel', font=('Leelawadee UI', 11, 'bold')).pack(anchor='w')
                 unavailable = ttk.Label(ribbon, text='รีเฟรชโควตาและเวลารีเซ็ต • ข้อมูลต้องไม่เกิน 15 นาที', style='Ribbon.TLabel', wraplength=dp(360))
@@ -764,6 +806,8 @@ def main():
                 if message.get('aiAdvice') is not None:
                     valid = validated_ai_advice(state.get('aiAdvice'), state['accounts'], values_by_account())
                     status.set('AI · Codex วิเคราะห์แล้ว · ตรวจเหตุผลและแผนก่อนยืนยันสลับบัญชี' if valid else 'คำตอบ AI ไม่มีบัญชีที่ใช้ได้กับโควตาปัจจุบัน · เลือกเองตามสูตรเดิม หรือกดวิเคราะห์ใหม่')
+                    if valid:
+                        show_ai_results()
                 if message.get('showError'):
                     messagebox.showerror('ยังทำรายการไม่ได้', message['details'], parent=root)
             else:

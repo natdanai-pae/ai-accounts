@@ -3,6 +3,27 @@ from datetime import datetime, timezone, timedelta
 
 
 class AIAdviceTests(unittest.TestCase):
+    def test_result_sections_separate_full_provider_answers(self):
+        import copy
+        from windows_gui import ai_result_sections
+        self.accounts.append({'id': 'claude:a', 'provider': 'claude', 'key': 'a'})
+        self.values['claude:a'] = copy.deepcopy(self.values['codex:a'])
+        self.reply['recommendations'].append({'provider': 'claude', 'account': 'claude:a', 'reason': 'เหตุผลเฉพาะ Claude', 'plan': 'แผน Claude ' + 'ก' * 900})
+        sections = ai_result_sections(self.reply, self.accounts, self.values, {'codex:a': 1, 'claude:a': 2}, self.now)
+        self.assertEqual([s['title'] for s in sections], ['Codex', 'Claude'])
+        self.assertIn(self.reply['recommendations'][0]['plan'], sections[0]['text'])
+        self.assertNotIn('แผน Claude', sections[0]['text'])
+        self.assertIn(self.reply['recommendations'][1]['plan'], sections[1]['text'])
+        self.assertNotIn(self.reply['recommendations'][0]['reason'], sections[1]['text'])
+        self.assertIn('บัญชี 2', sections[1]['text'])
+
+    def test_stale_result_sections_do_not_repeat_old_advice(self):
+        from windows_gui import ai_result_sections
+        sections = ai_result_sections(self.reply, self.accounts, self.values, {'codex:a': 1}, self.now + timedelta(minutes=16))
+        self.assertEqual(len(sections), 2)
+        self.assertTrue(all('ยังไม่มีคำแนะนำ AI ที่ใช้ได้' in s['text'] for s in sections))
+        self.assertNotIn(self.reply['recommendations'][0]['reason'], str(sections))
+
     def test_ai_notices_keep_usage_only_and_use_displayed_winner(self):
         from windows_gui import ai_consistent_alerts
         usage = {'provider': 'codex', 'kind': 'usage', 'account': 'codex:b', 'used': 50}
