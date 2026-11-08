@@ -32,8 +32,10 @@ _MESSAGES = {
 
 # Fixed code; all caller-controlled values arrive as base64 JSON data. No policy,
 # execution-policy bypass, registry changes, elevation, network, or shell=True.
+# First-use bootstrap follows Microsoft Toolkit ToastNotifierCompat.Setting.
 _SCRIPT = r'''
 $ErrorActionPreference = 'Stop'
+$stage = 'registration'
 try {
   $programs = [Environment]::GetFolderPath('Programs')
   $shortcut = Join-Path $programs 'AI Accounts.lnk'
@@ -90,18 +92,42 @@ public static class ShortcutIdentity {
   if ($item.ExtendedProperty('System.AppUserModel.ID') -ne $data.appId) {
     @{status='registration_required'} | ConvertTo-Json -Compress; exit
   }
-  if ($data.operation -eq 'register') { @{status='registered'} | ConvertTo-Json -Compress; exit }
   [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] > $null
   [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime] > $null
+  $stage = 'notifier'
   $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($data.appId)
-  if ($notifier.Setting.ToString() -ne 'Enabled') { @{status='disabled'} | ConvertTo-Json -Compress; exit }
+  if ($data.operation -eq 'register') {
+    # Win32 senders must submit once before Setting can be queried (Microsoft Toolkit).
+    $stage = 'bootstrap'
+    $initialXml = New-Object Windows.Data.Xml.Dom.XmlDocument
+    $initialXml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>AI Accounts registration</text></binding></visual></toast>')
+    $initial = [Windows.UI.Notifications.ToastNotification]::new($initialXml)
+    $initial.SuppressPopup = $true
+    $initial.Tag = 'AIAccountsInit'
+    $initial.Group = 'registration'
+    $initial.ExpirationTime = [DateTimeOffset]::Now.AddSeconds(15)
+    $notifier.Show($initial)
+    [Windows.UI.Notifications.ToastNotificationManager]::History.Remove('AIAccountsInit', 'registration', $data.appId)
+  }
+  $stage = 'setting'
+  # Reflection preserves the real WinRT getter exception instead of returning null.
+  $setting = $notifier.GetType().GetProperty('Setting').GetValue($notifier)
+  if ([string]$setting -ne 'Enabled') { @{status='disabled'} | ConvertTo-Json -Compress; exit }
+  if ($data.operation -eq 'register') { @{status='registered'} | ConvertTo-Json -Compress; exit }
+  $stage = 'xml'
   $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
   $xml.LoadXml($data.xml)
+  $stage = 'toast'
   $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
   $toast.ExpirationTime = [DateTimeOffset]::Now.AddMinutes(5)
+  $stage = 'show'
   $notifier.Show($toast)
   @{status='accepted'} | ConvertTo-Json -Compress
-} catch { @{status='failed'} | ConvertTo-Json -Compress }
+} catch {
+  $notificationException = $_.Exception
+  while ($notificationException.InnerException) { $notificationException = $notificationException.InnerException }
+  @{status='failed'; stage=$stage; code=('0x{0:X8}' -f ($notificationException.HResult -band 0xffffffffL))} | ConvertTo-Json -Compress
+}
 '''
 
 
@@ -133,7 +159,12 @@ def parse_result(raw):
         value = json.loads(raw)
         status = value.get('status') if isinstance(value, dict) else None
         if status in _MESSAGES:
-            return _result(status)
+            result = _result(status)
+            stage, code = value.get('stage'), value.get('code')
+            if status == 'failed' and stage in ('registration', 'notifier', 'bootstrap', 'setting', 'xml', 'toast', 'show') and isinstance(code, str) and re.fullmatch(r'0x[0-9A-Fa-f]{8}', code):
+                result['diagnostic'] = {'stage': stage, 'code': code.upper().replace('0X', '0x')}
+                result['message'] += ' (' + stage + ' / ' + result['diagnostic']['code'] + ')'
+            return result
     except (ValueError, TypeError):
         pass
     return _result('failed')
@@ -159,7 +190,8 @@ def register_notifications(executable=None, arguments=None, icon_path=None):
     """Explicit opt-in only. Creates/updates this user's AI Accounts shortcut.
 
     Frozen app defaults to its own exe. Source defaults to Python + GUI script.
-    Registration does not send a toast or enable disabled Windows settings.
+    Registration submits and removes a suppressed first-use toast; it does not
+    enable disabled Windows settings.
     """
     target = Path(executable or sys.executable).resolve()
     if not target.is_file():

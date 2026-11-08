@@ -21,7 +21,7 @@ This report describes the owner's configured computers. It is not a clean-instal
 
 ## Source and document checks
 
-- Integrated Python suite: 71 tests passed on macOS. Windows runner reported 71 tests with 3 environment-dependent skips; passing source tests alone is not live acceptance.
+- Integrated notification-fix suite:74 tests OK on macOS (1 Windows-only skip); Windows reported74 tests with3 environment-dependent skips; passing source tests alone is not live acceptance.
 - Regression coverage includes authentication snapshot restore, interrupted-switch recovery, refusing linked storage, distinct identities, complete session-directory readiness, post-sync file equality and confirmation/background-worker exclusion.
 - Thai helper responses use ASCII-safe JSON for legacy Windows output code pages.
 - Four-page BDA guide rendered and visually inspected; Sarabun Regular/Bold embedded and text extraction checked.
@@ -29,7 +29,7 @@ This report describes the owner's configured computers. It is not a clean-instal
 ## Remaining limitations
 
 - On the tested Windows build, finish the Code response and use File → Quit before switching. Active Code child processes can keep the safety guard engaged; do not force-close them.
-- Windows native notification registration exists, but banner delivery has not passed live verification. In-app notices remain available.
+- Windows Beta3 notification test passed from the actual packaged app button: AI Accounts test text was visibly present in native Notification Center on 8 November at15:13localtime. Do Not Disturb remained ON; popup-banner delivery with DND OFF was not tested. First-use registration uses a suppressed own-app toast before querying the strict permission setting. Saved opt-in restores registration on startup. No global notification/security settings or provider sessions changed.
 - The installed Mac GUI predates some newer strategy/threshold controls in source. No feature-parity claim is made for that installed binary.
 - First enrollment of an existing verified Windows Claude login now has isolated regression coverage, including preserving sessions and refusing ambiguous slots. A fresh Windows OS/user installation has not been independently certified.
 - Free reset redemption was not exercised using the owner's live credits.

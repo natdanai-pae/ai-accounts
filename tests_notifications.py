@@ -76,5 +76,40 @@ class NotificationTests(unittest.TestCase):
                 self.assertEqual(payload['operation'], 'register')
 
 
+    def test_failure_diagnostics_are_bounded_and_do_not_leak_raw_errors(self):
+        from windows_notifications import parse_result
+        value=parse_result('{"status":"failed","stage":"setting","code":"0x80070490","message":"private-token"}')
+        self.assertEqual(value['diagnostic'],{'stage':'setting','code':'0x80070490'})
+        self.assertIn('0x80070490',value['message'])
+        self.assertNotIn('private-token',str(value))
+        for stage,code in [('private-token','0x80070490'),('setting','private-token')]:
+            value=parse_result(json.dumps({'status':'failed','stage':stage,'code':code}))
+            self.assertNotIn('diagnostic',value)
+            self.assertNotIn('private-token',str(value))
+
+    @unittest.skipUnless(__import__('sys').platform == 'win32', 'Windows PowerShell regression')
+    def test_powershell_failure_reports_innermost_hresult_without_raw_exception(self):
+        import os
+        from pathlib import Path
+        import windows_notifications as n
+        ps=Path(os.environ.get('SystemRoot',r'C:\Windows'))/'System32/WindowsPowerShell/v1.0/powershell.exe'
+        catch=n._SCRIPT.rsplit('} catch {',1)[1]
+        script="$ErrorActionPreference='Stop'; $stage='setting'; try { throw [Exception]::new('private-token', [Runtime.InteropServices.COMException]::new('private-token', -2147023728)) } catch {"+catch
+        command=base64.b64encode(script.encode('utf-16le')).decode('ascii')
+        completed=subprocess.run([str(ps),'-NoProfile','-NonInteractive','-EncodedCommand',command],capture_output=True,timeout=20,creationflags=0x08000000)
+        self.assertEqual(completed.returncode,0,completed.stderr.decode(errors='replace'))
+        result=n.parse_result(completed.stdout.decode('utf-8-sig').strip())
+        self.assertEqual(result['diagnostic'],{'stage':'setting','code':'0x80070490'})
+        self.assertNotIn('private-token',str(result))
+
+    def test_saved_opt_in_registers_on_startup_but_opt_out_and_fixture_do_not(self):
+        from windows_gui import restore_notification_registration
+        from unittest.mock import Mock
+        for enabled,synthetic,expected in [(True,False,1),(False,False,0),(True,True,0)]:
+            callback=Mock()
+            restore_notification_registration(enabled,synthetic,callback)
+            self.assertEqual(callback.call_count,expected)
+            if expected:callback.assert_called_once_with('',register=True)
+
 if __name__ == '__main__':
     unittest.main()

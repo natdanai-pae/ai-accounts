@@ -208,6 +208,10 @@ def alert_policy(saved, accounts, values, now, enabled, strategy='rate', numbers
             alerts.append(candidate)
     return state, alerts
 
+def restore_notification_registration(enabled, synthetic, register):
+    if enabled and not synthetic:
+        register('', register=True)
+
 def confirm_idle(state, ask, *args, **kwargs):
     if state['busy']:
         return False
@@ -722,7 +726,7 @@ def main():
                 if result['ok'] and (not register or test):
                     result = send_notification('AI Accounts', body)
                 if not result['ok']:
-                    text = 'แจ้งในแอปได้ แต่ Windows notification ยังไม่พร้อม · ตรวจการตั้งค่า Notifications'
+                    text = result['message'] + ' · ข้อความยังแสดงในแอป'
                 else:
                     text = 'ส่งข้อความทดสอบให้ Windows แล้ว · ตรวจแบนเนอร์หรือศูนย์แจ้งเตือน' if test else ('เปิดการแจ้งเตือนแล้ว · ทำงานขณะเปิดแอป · ไม่สลับหรือรีเซ็ตอัตโนมัติ' if register else body)
                 events.put(('notification', None, text))
@@ -848,6 +852,7 @@ def main():
     root.after(20000, sync_sessions)
     root.after(1000, refresh_timer)
     render()
+    restore_notification_registration(notifications.get(), synthetic, native_notice)
     work(['list'])
     root.mainloop()
 

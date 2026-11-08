@@ -16,3 +16,5 @@ AI Accounts adapts and bundles the following components. Original licenses accom
 No affiliation with OpenAI or Anthropic is implied. Native Codex and Claude desktop applications are not redistributed. Artifact-specific resource hashes are in DEPENDENCY-SHA256SUMS.
 
 Claude Switcher source revision: `8bd0be5ebb77c1639a6184f2c846a40cccb15890`. AI Accounts modifies Windows desktop process detection to recognize the registered Claude Store executable while excluding renderer and Code CLI processes.
+
+Windows notification first-use bootstrap follows the MIT-licensed Windows Community Toolkit implementation by the .NET Foundation and Contributors: https://github.com/CommunityToolkit/WindowsCommunityToolkit/blob/main/Microsoft.Toolkit.Uwp.Notifications/Toasts/Compat/ToastNotifierCompat.cs . License included as windows-community-toolkit-MIT.txt. AI Accounts uses the Windows/Python standard libraries, not a bundled Toolkit binary.
