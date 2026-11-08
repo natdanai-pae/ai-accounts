@@ -128,7 +128,7 @@ class WindowsBackend(Backend):
             _write(path, original)
             raise
 
-    def checkpoint_primary(self):
+    def checkpoint_primary(self, enrollment_key=None):
         store = self.auth_store()
         store.recover()
         identity = self.primary_identity()
@@ -142,7 +142,11 @@ class WindowsBackend(Backend):
             key = next((k for k, v in identities.items() if v.get('email', '').casefold() == identity['email'].casefold()), None)
             if key is None:
                 key = store.state()['active']
-        if key is None or key not in self.config()['profiles']:
+        profiles = self.config()['profiles']
+        # Adopt an existing verified login only for the first explicitly selected slot.
+        if key is None and enrollment_key is not None and set(profiles) == {enrollment_key} and not identities and not store.state()['snapshots']:
+            key = enrollment_key
+        if key is None or key not in profiles:
             raise SafeError('ยังระบุรายการของบัญชีที่เปิดอยู่ไม่ได้ ข้อมูลล็อกอินเดิมยังไม่ถูกเปลี่ยน')
         self.remember_primary_identity(key, identity)
         store.capture(key)
@@ -317,7 +321,7 @@ class WindowsBackend(Backend):
             raise SafeError('ไม่พบบัญชีนี้')
         if self.primary_mode():
             self.close_primary_claude()
-            store = self.checkpoint_primary()
+            store = self.checkpoint_primary(enrollment_key=key)
             store.activate(key)
             self.launch_primary()
             return 'เปิดรายการเดิมใน Claude หลักแล้ว · เข้าสู่ระบบครั้งแรก เปิด Code แล้วกดเชื่อมข้อมูลโควตา'
