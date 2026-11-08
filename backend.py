@@ -558,10 +558,13 @@ def main(args):
         elif args == ['setup']:
             message = backend.setup()
         elif args == ['sync']:
-            switcher = backend.claude_modules()
-            if switcher.cs_sync.sync(backend.config().get('sync_dirs', [])):
-                raise SafeError('Session sync paused for safety')
-            message = 'Sync complete'
+            if hasattr(backend, 'sync'):
+                message = backend.sync()
+            else:
+                switcher = backend.claude_modules()
+                if switcher.cs_sync.sync(backend.config().get('sync_dirs', [])):
+                    raise SafeError('Session sync paused for safety')
+                message = 'Sync complete'
         else:
             raise SafeError('Unknown helper command')
     return {'ok': True, 'message': message}

@@ -17,7 +17,7 @@ class WindowsTests(unittest.TestCase):
             switcher = Mock()
             switcher.running.return_value = {'a': 123}
             switcher.busy_sessions.return_value = 1
-            with patch.object(backend, 'claude_modules', return_value=switcher):
+            with patch.object(backend, 'claude_modules', return_value=switcher), patch.object(backend, 'primary_mode', return_value=False):
                 with self.assertRaises(SafeError):
                     backend.login('claude', 'b')
                 switcher.quit_app.assert_not_called()
@@ -100,12 +100,13 @@ class WindowsTests(unittest.TestCase):
             app.parent.mkdir(parents=True)
             app.touch()
             result = Mock(returncode=0, stdout=json.dumps(str(package)).encode())
-            with patch('windows_backend.subprocess.run', return_value=result), patch('windows_backend.subprocess.Popen') as launch:
+            backend.fixture_root = False
+            with patch('windows_backend.subprocess.run', return_value=result), patch('windows_backend.subprocess.Popen') as launch, patch.object(backend, 'close_primary_claude'), patch.object(backend, 'checkpoint_primary'):
                 self.assertTrue(backend.list_accounts()['dependencies']['claudeApp'])
                 backend.add('claude', 'Account 1')
                 args = launch.call_args.args[0]
                 self.assertEqual(args[0], str(app))
-                self.assertTrue(args[1].startswith('--user-data-dir='))
+                self.assertEqual(len(args), 1, 'Store sign-in must use the real primary app')
                 self.assertEqual(len(backend.config()['profiles']), 1)
 
     def test_system_dpi_awareness_and_scaled_dimensions(self):

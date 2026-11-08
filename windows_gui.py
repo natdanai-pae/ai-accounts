@@ -208,6 +208,15 @@ def alert_policy(saved, accounts, values, now, enabled, strategy='rate', numbers
             alerts.append(candidate)
     return state, alerts
 
+def confirm_idle(state, ask, *args, **kwargs):
+    if state['busy']:
+        return False
+    state['busy'] = True
+    try:
+        return ask(*args, **kwargs)
+    finally:
+        state['busy'] = False
+
 def refresh_due(last, now, busy):
     return not busy and (now < last or now - last >= 300)
 
@@ -451,10 +460,10 @@ def main():
             status.set('กำลังทำรายการก่อนหน้าอยู่ · รอผลก่อนเริ่มรายการใหม่')
             return
         if account['provider'] == 'claude' and not account.get('email'):
-            if messagebox.askokcancel('เข้าสู่ระบบต่อ', 'จะปิดหน้าต่าง Claude บัญชีอื่นที่ไม่มีงานกำลังทำ เพื่อไม่ให้หน้าล็อกอินกลับผิดบัญชี\n\nเลือกเข้าสู่ระบบด้วยอีเมลในหน้าต่างที่เปิด แล้วเปิด Code หนึ่งครั้ง\nไม่มีการเพิ่มรายการบัญชีใหม่', parent=root):
+            if confirm_idle(state, messagebox.askokcancel, 'เข้าสู่ระบบต่อ', 'จะปิด Claude ที่ไม่มีงานกำลังทำ และสำรองบัญชีปัจจุบันก่อนเปิดรายการนี้ในหน้าต่างหลัก\n\nเข้าสู่ระบบครั้งแรกเฉพาะบัญชีที่ยังไม่เคยบันทึก แล้วเปิด Code และกดเชื่อมข้อมูลโควตา\nไม่มีการเพิ่มรายการบัญชีใหม่หรือย้าย session', parent=root):
                 work(['login', 'claude', account['key']])
             return
-        if messagebox.askokcancel('สลับบัญชี', 'บันทึกงานก่อนสลับ และปิดหน้าต่าง Codex เองก่อนสลับ Codex\n\nสลับไป ' + account_title(account) + '?', parent=root):
+        if confirm_idle(state, messagebox.askokcancel, 'สลับบัญชี', 'บันทึกงานก่อนสลับ และปิดหน้าต่าง Codex เองก่อนสลับ Codex\n\nสลับไป ' + account_title(account) + '?', parent=root):
             work(['switch', account['provider'], account['key']])
 
     def add(provider):
@@ -736,7 +745,7 @@ def main():
         if state['busy']:
             status.set('กำลังทำรายการก่อนหน้าอยู่ · รอผลก่อนเริ่มรายการใหม่')
             return
-        if any(a['provider'] == 'claude' for a in state['accounts']) and not messagebox.askokcancel('เชื่อมข้อมูล Claude', 'จะออกจากหน้าต่าง Claude ที่ไม่มีงานกำลังทำ เพื่ออ่านข้อมูลล็อกอินและโควตา\nบันทึกข้อความที่ยังไม่ได้ส่งก่อนดำเนินการ\n\nไม่ลบบัญชีหรือ session และเปิดกลับได้จากปุ่มใช้บัญชีนี้', parent=root):
+        if any(a['provider'] == 'claude' for a in state['accounts']) and not confirm_idle(state, messagebox.askokcancel, 'เชื่อมข้อมูล Claude', 'จะออกจากหน้าต่าง Claude ที่ไม่มีงานกำลังทำ เพื่ออ่านข้อมูลล็อกอินและโควตา\nบันทึกข้อความที่ยังไม่ได้ส่งก่อนดำเนินการ\n\nไม่ลบบัญชีหรือ session และเปิดกลับได้จากปุ่มใช้บัญชีนี้', parent=root):
             return
         work(['connect'])
     ttk.Button(actions, text='เชื่อมข้อมูลโควตา', style='Side.TButton', command=connect_accounts).pack(fill='x', pady=dp((0, 7)))
