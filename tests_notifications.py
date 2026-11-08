@@ -58,6 +58,7 @@ class NotificationTests(unittest.TestCase):
                 # before any WinRT notifier/bootstrap, never touch real Start Menu.
                 fragment = n._SCRIPT.split('  [Windows.UI.Notifications.ToastNotificationManager,', 1)[0]
                 fragment = fragment.replace("[Environment]::GetFolderPath('Programs')", literal(programs)).replace("[Environment]::GetFolderPath('LocalApplicationData')", literal(local))
+                fragment = fragment.replace('    $backupRoot =', "    function Get-FileHash { throw 'optional hash cmdlet unavailable' }\n    $backupRoot =", 1)
                 script = prefix + fragment + "\nWrite-Output 'fixture-registered'\n} catch { Write-Error $_; exit 1 }"
                 if scenario == 'collision':
                     execute(script, succeeds=False)

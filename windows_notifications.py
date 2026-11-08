@@ -8,6 +8,7 @@ Microsoft contracts:
 https://learn.microsoft.com/windows/win32/shell/enable-desktop-toast-with-appusermodelid
 https://learn.microsoft.com/windows/win32/shell/quickstart-sending-desktop-toast
 https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-shgetpropertystorefromparsingname
+https://learn.microsoft.com/windows/win32/api/shlobj_core/nf-shlobj_core-shchangenotify
 """
 import base64
 import json
@@ -78,6 +79,12 @@ public static class ShortcutIdentity {
   }
 }
 '@
+    function Get-AIShortcutHash([string] $path) {
+      $stream = [IO.File]::OpenRead($path)
+      $sha = [Security.Cryptography.SHA256]::Create()
+      try { return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '') }
+      finally { $sha.Dispose(); $stream.Dispose() }
+    }
     $backupRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'AI Accounts\shortcut-backups'
     $legacy = Join-Path $programs 'AI Accounts.before-notifications.lnk'
     if ([IO.File]::Exists($legacy)) {
@@ -89,11 +96,11 @@ public static class ShortcutIdentity {
       $current = ($old.TargetPath -eq $data.executable -and $old.Arguments -eq $data.arguments)
       if (($owned -or $current) -and [IO.File]::Exists($old.TargetPath) -and [IO.Path]::GetFileName($old.TargetPath) -eq 'AI Accounts.exe' -and $old.Arguments -eq '' -and $old.Description -match '^AI Accounts(?: \d[\w. -]*Beta ?\d+)?$' -and (!$oldId -or $oldId -eq $data.appId)) {
         [IO.Directory]::CreateDirectory($backupRoot) > $null
-        $hash = (Get-FileHash -LiteralPath $legacy -Algorithm SHA256).Hash
+        $hash = (Get-AIShortcutHash $legacy)
         $destination = Join-Path $backupRoot ('legacy-' + $hash + '.lnk')
         if (![IO.File]::Exists($destination)) { [IO.File]::Copy($legacy, $destination, $false) }
-        if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ne $hash) { throw 'Shortcut backup conflict' }
-        if ((Get-FileHash -LiteralPath $legacy -Algorithm SHA256).Hash -ne $hash) { throw 'Shortcut changed during backup' }
+        if ((Get-AIShortcutHash $destination) -ne $hash) { throw 'Shortcut backup conflict' }
+        if ((Get-AIShortcutHash $legacy) -ne $hash) { throw 'Shortcut changed during backup' }
         [IO.File]::Delete($legacy)
         [ShortcutIdentity]::Notify($programs, $true)
       }
