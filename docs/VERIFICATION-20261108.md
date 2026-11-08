@@ -36,3 +36,9 @@ This report describes the owner's configured computers. It is not a clean-instal
 - Unsigned beta packaging, public installer release and cross-device native-session synchronization remain outside these passed checks. Download artifacts are distributed as an unsigned Beta; see release notes for platform scope.
 
 Private backup paths and detailed live evidence are retained in the local task record, not published here.
+
+## Additional popup-banner check — 8 November 2026
+
+Windows Beta3 was launched through the installed Desktop shortcut. The native test button displayed the actual bottom-right popup with title `AI Accounts` and the full test text. DND was observed ON, switched OFF temporarily through Settings, then restored ON and verified. AI Accounts was closed normally and an independent process query confirmed zero remaining processes. No provider authentication or session changes occurred.
+
+The tested PC showed the cached sender caption `AI Accounts.before-notifications` above the correct title/body. This cosmetic sender-name issue remains; the private screenshot contains account information and is not published. No executable rebuild was required for this additional test.
