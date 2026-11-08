@@ -25,7 +25,7 @@ class NotificationTests(unittest.TestCase):
             return completed.stdout.decode('utf-8-sig', errors='replace')
         for scenario in ('missing', 'existing', 'legacy', 'unrelated', 'unowned', 'collision'):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
-                base = Path(directory)
+                base = Path(directory).resolve()
                 programs, local = base / 'Programs', base / 'Local'
                 programs.mkdir(); local.mkdir()
                 target = local / 'Programs' / 'AI Accounts-notifications-beta3' / 'AI Accounts.exe'
