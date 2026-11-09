@@ -50,7 +50,7 @@ class RunnerTests(unittest.TestCase):
             run=Mock(return_value={'recommendations':[]})
             callback=r.leased_infer(Router(),source,Path('/bin/codex-fixture'),resources=Path(d),clock=lambda:1000,infer_function=run)
             self.assertEqual(callback({'accounts':[]}),{'recommendations':[]})
-            self.assertEqual(lease_events,[('codex-1',True)])
+            self.assertEqual(lease_events,[('codex-1',False)])
             run.assert_called_once()
             source.write_text(source.read_text().replace('native-pin','different-pin'))
             with self.assertRaises(Exception):callback({'accounts':[]})
@@ -67,7 +67,7 @@ class RunnerTests(unittest.TestCase):
                 for p in ('codex','claude')}
             source.write_text(json.dumps(meta))
             router=root/'router.py'
-            router.write_text('import contextlib\n@contextlib.contextmanager\ndef leases(alias,maintenance=False):\n assert alias=="codex-1" and maintenance\n yield\ndef native_identity(alias):return "native-pin"\n')
+            router.write_text('import contextlib\n@contextlib.contextmanager\ndef leases(alias,maintenance=False):\n assert alias=="codex-1" and not maintenance\n yield\ndef native_identity(alias):return "native-pin"\n')
             cli=root/'codex'
             cli.write_text('#!'+sys.executable+'\nimport json,sys\nprompt=sys.stdin.read()\ns=json.loads(prompt.split("SNAPSHOT\\n")[-1])\na={"recommendations":[{"provider":p,"account":next(a["account"] for a in s["accounts"] if a["provider"]==p),"reason":"Fixture quota advice","plan":"Useful work before reset"} for p in ("codex","claude")]}\nopen(sys.argv[sys.argv.index("--output-last-message")+1],"w").write(json.dumps(a))\n')
             cli.chmod(0o700)
@@ -78,5 +78,39 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout)['status'],'analysis_updated')
             self.assertNotIn('native-pin',state.read_text())
             self.assertEqual(state.stat().st_mode & 0o777,0o600)
+
+    def test_inference_defers_when_normal_capacity_lease_is_busy(self):
+        r=self.module()
+        import contextlib
+        for reason in ('account_busy','global_capacity','memory_capacity','maintenance_gate'):
+            class Router:
+                @contextlib.contextmanager
+                def leases(self,alias,maintenance=False):
+                    self.maintenance=maintenance
+                    raise RuntimeError(reason)
+                    yield
+                def native_identity(self,alias):raise AssertionError('Must not read identity before capacity admission')
+            router=Router();run=Mock()
+            callback=r.leased_infer(router,Path('/unused/source'),Path('/unused/codex'),infer_function=run)
+            with self.assertRaises(RuntimeError):callback({'accounts':[]})
+            self.assertFalse(router.maintenance);run.assert_not_called()
+
+    def test_inference_requires_180_seconds_of_credential_runway(self):
+        r=self.module()
+        import contextlib
+        class Router:
+            def leases(self,alias,maintenance=False):return contextlib.nullcontext()
+            def native_identity(self,alias):return 'native-pin'
+        with tempfile.TemporaryDirectory() as d:
+            source=Path(d)/'accounts.json'
+            meta={'codex-1':{'expected_identity':'native-pin','checked_epoch':1000,'expires_epoch':1179,
+                'availability':'ready','windows_used_percent':{'weekly':10},'windows_reset_epoch':{'weekly':6000}}}
+            source.write_text(json.dumps(meta));run=Mock(return_value={})
+            callback=r.leased_infer(Router(),source,Path('/unused/codex'),clock=lambda:1000,infer_function=run)
+            with self.assertRaises(Exception):callback({'accounts':[]})
+            run.assert_not_called()
+            meta['codex-1']['expires_epoch']=1180;source.write_text(json.dumps(meta))
+            self.assertEqual(callback({'accounts':[]}),{})
+            run.assert_called_once()
 
 if __name__=='__main__':unittest.main()

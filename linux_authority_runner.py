@@ -18,7 +18,7 @@ import time
 import ai_advisor
 from backend import SafeError
 from headless_authority import Authority, router_records, _usable
-from mcp_server import stamp
+from mcp_server import stamp, numeric
 
 
 def read_metadata(path):
@@ -40,17 +40,22 @@ class InferenceBackend:
 
 
 def leased_infer(router,state_source,executable,resources=None,clock=time.time,infer_function=ai_advisor.infer):
-    """Use the existing codex-1 native home under its exclusive maintenance lease.
+    """Use the existing codex-1 native home under its normal work lease.
 
-    Token refresh, if needed, remains within the official CLI and its original
-    local home. No profile copy, Mac credential, API key or fallback is used.
+    Existing slot/global/memory and maintenance gates remain enforced. A
+    persistent official app-server is not a reason to block ordinary inference.
+    At least180seconds of fresh credential runway covers the shared120second
+    inference timeout. Any normal native auth handling stays within the official
+    CLI and its original local home. No profile copy, Mac credential, API key or fallback is used.
     """
     backend=InferenceBackend(executable,resources or Path(__file__).parent)
     def infer(snapshot):
-        with router.leases('codex-1',maintenance=True):
+        with router.leases('codex-1',maintenance=False):
             now=clock();metadata=read_metadata(state_source)
             record=next((r for r in router_records(metadata,now=now) if r['account_ref']=='codex-1'),None)
-            if not _usable(record,now):raise SafeError('Local inference account is unavailable')
+            runway=metadata.get('codex-1',{}).get('expires_epoch')
+            if not _usable(record,now) or not numeric(runway) or runway<now+180:
+                raise SafeError('Local inference account is unavailable')
             native=router.native_identity('codex-1')
             expected=metadata.get('codex-1',{}).get('expected_identity')
             if not isinstance(native,str) or not expected or native!=expected:
