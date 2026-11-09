@@ -1,6 +1,11 @@
 """Pool routing follows one local AI Accounts decision; it never ranks accounts."""
 from datetime import datetime, timezone
 import json
+import hashlib
+import hmac
+import os
+from pathlib import Path
+import stat
 import math
 import re
 import time
@@ -155,3 +160,52 @@ def decision_proof(response, provider, now=None):
     return {'selection_policy':'ai_accounts_sticky_v1','decision_source':'ai',
             'decision_id':value['decision_id'],'account_ref':value['account_ref'],
             'decision_generated_at':value['generated_at'],'decision_expires_at':value['expires_at']}
+
+
+def local_identity_matches(response, expected_identity, decision_state=None):
+    """Bind a current native identity pin to the exact private AI decision.
+
+    Only the fixed local authority decision file is read in production. The
+    optional path is a trusted injection seam for isolated filesystem tests;
+    it is never taken from an MCP response or user request. No fingerprint or
+    raw pin is returned, logged, or sent to MCP.
+    """
+    if os.name != 'posix' or not isinstance(expected_identity, str) or not expected_identity or len(expected_identity) > 16384:
+        return False
+    try:
+        if not isinstance(response, dict) or not isinstance(response.get('recommended_account'), dict):
+            return False
+        provider = response['recommended_account'].get('provider')
+        alias, ident = response.get('account_ref'), response.get('decision_id')
+        if (provider not in PROVIDERS or response.get('source') != 'ai'
+                or not isinstance(alias, str) or not re.fullmatch(provider+r'-[1-9][0-9]{0,5}', alias)
+                or not isinstance(ident, str) or not re.fullmatch(r'[a-f0-9]{32}', ident)):
+            return False
+        path = Path.home()/'.local/state/ai-accounts/decision.json' if decision_state is None else Path(decision_state)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'r', encoding='utf-8') as stream:
+            metadata = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+                    or stat.S_IMODE(metadata.st_mode) & 0o077 or metadata.st_size > 1024*1024):
+                return False
+            saved = json.load(stream)
+        if not isinstance(saved, dict) or type(saved.get('version')) is not int or saved['version'] != 1:
+            return False
+        decisions = saved.get('decisions')
+        bound = decisions.get(provider) if isinstance(decisions, dict) else None
+        if (not isinstance(bound, dict) or bound.get('provider') != provider or bound.get('source') != 'ai'
+                or bound.get('decision_id') != ident or bound.get('account_ref') != alias
+                or type(bound.get('number')) is not int or alias != provider+'-'+str(bound['number'])):
+            return False
+        generated, expiry = bound.get('generated_epoch'), bound.get('expires_epoch')
+        binding = bound.get('identity_binding')
+        response_generated, response_expiry = _epoch(response.get('generated_at')), _epoch(response.get('expires_at'))
+        if (not _number(generated) or not _number(expiry) or not 0 < expiry-generated <= DECISION_TTL
+                or response_generated is None or response_expiry is None
+                or not math.isclose(response_generated, generated, rel_tol=0, abs_tol=1e-6)
+                or not math.isclose(response_expiry, expiry, rel_tol=0, abs_tol=1e-6)
+                or not isinstance(binding, str) or not re.fullmatch(r'[a-f0-9]{64}', binding)):
+            return False
+        return hmac.compare_digest(hashlib.sha256(expected_identity.encode()).hexdigest(), binding)
+    except (OSError, ValueError, TypeError, UnicodeError, OverflowError):
+        return False

@@ -2,6 +2,7 @@
 import importlib.util
 from datetime import datetime, timezone
 import copy
+import os
 import unittest
 from unittest.mock import patch
 
@@ -127,5 +128,52 @@ class AuthoritySelectionTests(unittest.TestCase):
         with self.assertRaises(m.AuthorityUnavailable) as error:
             m.select_route(routes(),'codex',now=NOW,recommendation=response(),eligible=broken_guard)
         self.assertNotIn('private',str(error.exception))
+
+    @unittest.skipIf(os.name != 'posix', 'native private decision file permissions require POSIX')
+    def test_local_identity_guard_binds_current_pin_to_exact_private_decision(self):
+        m=self.module()
+        self.assertTrue(hasattr(m,'local_identity_matches'),'local decision identity guard missing')
+        import tempfile,json,hashlib
+        from pathlib import Path
+        payload=response(decision='a'*32)
+        private={'version':1,'decisions':{'codex':{'provider':'codex','account_ref':'codex-2','number':2,'source':'ai','decision_id':'a'*32,'generated_epoch':NOW-10,'expires_epoch':NOW+890,'reason':'safe','identity_binding':hashlib.sha256(b'original-pin').hexdigest()}}}
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'decision.json'
+            path.write_text(json.dumps(private));path.chmod(0o600)
+            self.assertTrue(m.local_identity_matches(payload,'original-pin',decision_state=path))
+            private['decisions']['codex']['generated_epoch']=NOW-10+0.1234567
+            private['decisions']['codex']['expires_epoch']=NOW+890+0.1234567
+            payload['generated_at']=stamp(private['decisions']['codex']['generated_epoch'])
+            payload['expires_at']=stamp(private['decisions']['codex']['expires_epoch'])
+            path.write_text(json.dumps(private))
+            self.assertTrue(m.local_identity_matches(payload,'original-pin',decision_state=path),'ISO microsecond rounding must not break a valid identity binding')
+            self.assertFalse(m.local_identity_matches(payload,'replacement-pin',decision_state=path))
+            changed=copy.deepcopy(payload);changed['decision_id']='b'*32
+            self.assertFalse(m.local_identity_matches(changed,'original-pin',decision_state=path))
+            changed=copy.deepcopy(payload);changed['account_ref']='codex-1'
+            self.assertFalse(m.local_identity_matches(changed,'original-pin',decision_state=path))
+            private['decisions']['codex']['identity_binding']='bad-digest'
+            path.write_text(json.dumps(private))
+            self.assertFalse(m.local_identity_matches(payload,'original-pin',decision_state=path))
+            path.unlink()
+            self.assertFalse(m.local_identity_matches(payload,'original-pin',decision_state=path))
+
+    @unittest.skipIf(os.name != 'posix', 'native private decision file permissions require POSIX')
+    def test_local_identity_guard_rejects_nonprivate_symlink_and_malformed_state(self):
+        m=self.module()
+        self.assertTrue(hasattr(m,'local_identity_matches'),'private decision file guard missing')
+        import tempfile,json,hashlib
+        from pathlib import Path
+        payload=response(decision='a'*32)
+        private={'version':1,'decisions':{'codex':{'provider':'codex','account_ref':'codex-2','number':2,'source':'ai','decision_id':'a'*32,'generated_epoch':NOW-10,'expires_epoch':NOW+890,'reason':'safe','identity_binding':hashlib.sha256(b'original-pin').hexdigest()}}}
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'decision.json';link=Path(directory)/'linked.json'
+            path.write_text(json.dumps(private));path.chmod(0o644)
+            self.assertFalse(m.local_identity_matches(payload,'original-pin',decision_state=path))
+            path.chmod(0o600);link.symlink_to(path)
+            self.assertFalse(m.local_identity_matches(payload,'original-pin',decision_state=link))
+            path.write_text('{bad json')
+            self.assertFalse(m.local_identity_matches(payload,'original-pin',decision_state=path))
+            self.assertFalse(m.local_identity_matches(payload,None,decision_state=path))
 
 if __name__=='__main__':unittest.main()
