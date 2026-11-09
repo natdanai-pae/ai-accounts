@@ -534,6 +534,10 @@ def decrypt_cookie(host, encrypted, password):
     return token
 
 def main(args):
+    if args == ['mcp-serve']:
+        from mcp_server import serve
+        serve()
+        return None
     if args == ['--self-test']:
         # No user-selected root and no inherited credential access in frozen smoke tests.
         with tempfile.TemporaryDirectory(prefix='ai-accounts-fixture-') as tmp:
@@ -586,7 +590,9 @@ if __name__ == '__main__':
     os.umask(0o077)
     try:
         # Escaped JSON preserves Thai even when Windows pipes use a legacy code page.
-        print(json.dumps(main(sys.argv[1:])))
+        result = main(sys.argv[1:])
+        if result is not None:
+            print(json.dumps(result))
     except Exception as error:
         print(json.dumps({'ok': False, 'message': str(error) if isinstance(error, SafeError) else 'Operation failed safely; check login and local configuration'}))
         sys.exit(1)

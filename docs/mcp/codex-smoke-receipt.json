@@ -1,0 +1,14 @@
+[
+  {
+    "type": "mcp_tool_call",
+    "server": "ai_accounts",
+    "tool": "ai_accounts_summary",
+    "status": "in_progress"
+  },
+  {
+    "type": "mcp_tool_call",
+    "server": "ai_accounts",
+    "tool": "ai_accounts_summary",
+    "status": "completed"
+  }
+]

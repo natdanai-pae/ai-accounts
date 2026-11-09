@@ -1,0 +1,82 @@
+{
+  "tools": [
+    {
+      "name": "ai_accounts_status",
+      "description": "Read the same quota snapshot displayed by AI Accounts; never refresh.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "codex",
+              "claude",
+              "all"
+            ],
+            "default": "all"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ai_accounts_recommend",
+      "description": "Read the UI recommendation. task_kind is informational; no dispatch occurs.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "codex",
+              "claude"
+            ]
+          },
+          "task_kind": {
+            "type": "string",
+            "enum": [
+              "chat",
+              "implementation",
+              "review",
+              "vision",
+              "integration"
+            ]
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ai_accounts_summary",
+      "description": "Compact read-only account and recommendation summary.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

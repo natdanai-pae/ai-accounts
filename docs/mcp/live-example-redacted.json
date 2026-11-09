@@ -1,0 +1,68 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "ai_accounts_summary",
+      "arguments": {}
+    }
+  },
+  "response": {
+    "providers": {
+      "codex": {
+        "ready_accounts": [
+          2
+        ],
+        "recommended_account": {
+          "provider": "codex",
+          "account_number": 3,
+          "account_alias": "Account 3",
+          "identity_masked": "k***@gmail.com",
+          "availability": "near_limit",
+          "quota_used_percent": 97,
+          "quota_remaining_percent": 3,
+          "quota_checked_at": "2026-11-09T05:16:59Z",
+          "quota_reset_at": "2026-11-09T17:28:32Z",
+          "quota_reset_in_seconds": 43793,
+          "data_fresh": true,
+          "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+        },
+        "attention_accounts": [
+          {
+            "account_number": 3,
+            "availability": "near_limit"
+          },
+          {
+            "account_number": 1,
+            "availability": "exhausted"
+          }
+        ]
+      },
+      "claude": {
+        "ready_accounts": [
+          1,
+          2,
+          3
+        ],
+        "recommended_account": {
+          "provider": "claude",
+          "account_number": 3,
+          "account_alias": "Account 3",
+          "identity_masked": "k***@gmail.com",
+          "availability": "ready",
+          "quota_used_percent": 6,
+          "quota_remaining_percent": 94,
+          "quota_checked_at": "2026-11-09T05:17:25Z",
+          "quota_reset_at": "2026-11-09T16:00:00Z",
+          "quota_reset_in_seconds": 38481,
+          "data_fresh": true,
+          "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+        },
+        "attention_accounts": []
+      }
+    },
+    "quota_checked_at": "2026-11-09T05:17:25Z",
+    "warning": null
+  }
+}

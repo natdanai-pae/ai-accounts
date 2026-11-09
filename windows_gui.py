@@ -728,6 +728,7 @@ def main():
         text.focus_set()
 
     def render():
+        mcp_recommendations = {}
         state['lastPaint'] = time.time()
         values = values_by_account()
         ai_advice = validated_ai_advice(state.get('aiAdvice'), state['accounts'], values)
@@ -743,6 +744,8 @@ def main():
             advice = ai_advice.get(provider)
             if advice:
                 winner = next(a for a in accounts if a['id'] == advice['account'])
+            if winner:
+                mcp_recommendations[provider] = {'number': preferences['numbers'][winner['id']], 'reason': advice['reason'] if advice else recommendation_reason(accounts, values, winner, preferences['numbers'], strategy=preferences['strategy']), 'evaluated_at': time.time()}
             ribbon = ribbons[provider]
             canvas = scroll_surfaces[0 if provider == 'codex' else 1][1]
             canvas.pack_configure(expand=bool(accounts), fill='both' if accounts else 'x')
@@ -835,6 +838,17 @@ def main():
                     reason_label.pack(anchor='w', fill='x')
                     reason_label.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(dp(160), e.width)))
 
+        if not synthetic:
+            snapshot_accounts = []
+            for account in state['accounts']:
+                u = values.get(account['id']) or {}
+                week = u.get('secondary') or {}; primary = u.get('primary')
+                epoch = lambda value: date(value).timestamp() if date(value) else None
+                snapshot_accounts.append({'provider': account['provider'], 'number': preferences['numbers'][account['id']], 'email': account.get('email'),
+                    'used': week.get('usedPercent'), 'checked': epoch(u.get('updatedAt')), 'reset': epoch(week.get('resetsAt')), 'error': bool(u.get('error')),
+                    'primary_present': primary is not None, 'primary_used': (primary or {}).get('usedPercent'), 'primary_reset': epoch((primary or {}).get('resetsAt'))})
+            mcp.publish({'accounts': snapshot_accounts, 'recommendations': mcp_recommendations, 'refreshing': state['busy']})
+
     def poll_once():
         try:
             accounts, usage, message = events.get_nowait()
@@ -910,7 +924,30 @@ def main():
         try:
             poll_once()
         finally:
-            root.after(100, poll)
+            from mcp_bridge import Bridge
+    mcp = Bridge(helper)
+    def mcp_settings():
+        dialog = tk.Toplevel(root); dialog.title('Settings · MCP'); dialog.geometry('520x280')
+        body = ttk.Frame(dialog, padding=20); body.pack(fill='both', expand=True)
+        ttk.Label(body, text='MCP · อ่านสถานะเท่านั้น', font=('Leelawadee UI', 14, 'bold')).pack(anchor='w')
+        status_text = tk.StringVar()
+        ttk.Label(body, textvariable=status_text, wraplength=470).pack(anchor='w', pady=12)
+        def update():status_text.set(('Running · '+mcp.endpoint if mcp.running else 'Stopped')+'\nใช้ snapshot เดียวกับหน้าจอ ไม่รีเฟรชหรือวิเคราะห์ AI จาก MCP\nหยุดเมื่อปิด AI Accounts · โปรแกรมในเครื่องอ่านข้อมูลที่ปิดบังแล้วได้')
+        def copy_config():
+            if mcp.running:
+                root.clipboard_clear(); root.clipboard_append(json.dumps({'mcpServers': {'ai-accounts': {'url': mcp.endpoint}}}, indent=2))
+        ttk.Button(body, text='Copy MCP config', command=copy_config).pack(anchor='w')
+        def toggle():
+            if mcp.running:mcp.stop()
+            else:mcp.start()
+            render(); dialog.after(500,update)
+        ttk.Button(body, text='Start / Stop MCP', command=toggle).pack(anchor='w', pady=8)
+        update()
+    ttk.Button(sidebar, text='Settings · MCP', command=mcp_settings).pack(fill='x', pady=dp(5))
+    if not synthetic:mcp.start()
+    def close_app():mcp.stop();root.destroy()
+    root.protocol('WM_DELETE_WINDOW',close_app)
+    root.after(100, poll)
 
     def sync_sessions():
         if not state['busy']:
@@ -1073,7 +1110,8 @@ def main():
     render()
     restore_notification_registration(notifications.get(), synthetic, native_notice)
     work(['list'])
-    root.mainloop()
+    try: root.mainloop()
+    finally: mcp.stop()
 
 if __name__ == '__main__':
     if '--self-test' in sys.argv:

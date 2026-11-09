@@ -952,6 +952,10 @@ final class AIAnswersWindow: NSWindowController {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 }
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    var mcpProcess: Process?
+    var mcpInput: Pipe?
+    var mcpEndpoint: String?
+    let mcpQueue = DispatchQueue(label: "ai-accounts.mcp-snapshot")
     var window: NSWindow!
     var rows: [String: AccountRow] = [:]
     var accounts: [Account] = []
@@ -1042,7 +1046,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         resetHoursSelector.selectItem(at: [1, 6, 24, 48].firstIndex(of: avoidResetHours)!)
         resetHoursSelector.target = self; resetHoursSelector.action = #selector(changeStrategy)
         resetHoursSelector.setAccessibilityLabel("หลีกเลี่ยงใช้สิทธิ์เมื่อใกล้รีเซ็ตตามรอบ")
-        let guidance = NSStackView(views: [notificationToggle, test, settings, NSView(), strategySelector, resetHoursSelector]); guidance.spacing = 10
+        let mcpSettings = NSButton(title: "Settings · MCP", target: self, action: #selector(showMCPSettings)); mcpSettings.bezelStyle = .inline
+        let guidance = NSStackView(views: [notificationToggle, test, settings, mcpSettings, NSView(), strategySelector, resetHoursSelector]); guidance.spacing = 10
         let providerColumns = NSStackView(); providerColumns.orientation = .horizontal; providerColumns.alignment = .top; providerColumns.distribution = .fillEqually; providerColumns.spacing = 16
         for provider in ["codex", "claude"] {
             let column = NSStackView(); column.orientation = .vertical; column.alignment = .leading; column.spacing = 0
@@ -1103,10 +1108,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             if self.lastPolicyTick.map({ Date().timeIntervalSince($0) >= 30 }) ?? true { self.lastPolicyTick = Date(); self.tick() }
         }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(wake), name: NSWorkspace.didWakeNotification, object: nil)
+        if fixtureMode == nil { startMCP() }
         refresh()
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { !state.busy }
     func applicationWillTerminate(_ notification: Notification) {
+        stopMCP()
         recommendationTimer?.invalidate(); refreshGeneration += 1
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
@@ -1297,6 +1304,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
         updateControls()
+        publishMCP()
+    }
+    func startMCP() {
+        guard mcpProcess == nil, fixtureMode == nil, let resources = Bundle.main.resourceURL else { return }
+        let process = Process(), input = Pipe(), output = Pipe()
+        process.executableURL = resources.appendingPathComponent("backend/aiaccounts-helper")
+        process.arguments = ["mcp-serve"]; process.standardInput = input; process.standardOutput = output; process.standardError = FileHandle.nullDevice
+        output.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], reply["status"] as? String == "running", let endpoint = reply["endpoint"] as? String, endpoint == "http://127.0.0.1:47831/mcp" else { return }
+            DispatchQueue.main.async { self?.mcpEndpoint = endpoint; self?.publishMCP() }
+        }
+        process.terminationHandler = { [weak self] _ in DispatchQueue.main.async { self?.mcpEndpoint = nil; self?.mcpProcess = nil; self?.mcpInput = nil } }
+        do { try process.run(); mcpProcess = process; mcpInput = input } catch { mcpEndpoint = nil }
+    }
+    func stopMCP() {
+        try? mcpInput?.fileHandleForWriting.close()
+        if mcpProcess?.isRunning == true { mcpProcess?.terminate() }
+        mcpProcess = nil; mcpInput = nil; mcpEndpoint = nil
+    }
+    @objc func showMCPSettings() {
+        let panel = NSAlert(); panel.messageText = "Settings · MCP"
+        panel.informativeText = "อ่านสถานะเท่านั้น\n" + (mcpProcess?.isRunning == true && mcpEndpoint != nil ? "Running\n\(mcpEndpoint!)" : "Stopped · พอร์ตอาจถูกใช้งานอยู่") + "\nใช้ snapshot เดียวกับหน้าจอ ไม่รีเฟรชหรือวิเคราะห์ AI จากการอ่าน MCP\nทำงานเฉพาะตอนเปิด AI Accounts · แอปอื่นในเครื่องที่เข้าถึงพอร์ตนี้อ่านข้อมูลที่ปิดบังแล้วได้"
+        panel.addButton(withTitle: "ปิด"); panel.addButton(withTitle: "Copy MCP config")
+        panel.addButton(withTitle: mcpProcess?.isRunning == true ? "Stop MCP" : "Start MCP")
+        let result = panel.runModal()
+        if result == .alertSecondButtonReturn, let endpoint = mcpEndpoint {
+            let config: [String: Any] = ["mcpServers": ["ai-accounts": ["url": endpoint]]]
+            if let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]), let text = String(data: data, encoding: .utf8) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
+        } else if result == .alertThirdButtonReturn { if mcpProcess != nil { stopMCP() } else { startMCP() }; showMCPSettings() }
+    }
+    func publishMCP() {
+        guard let input = mcpInput, mcpProcess?.isRunning == true else { return }
+        let now = Date(), null = NSNull()
+        let rows: [[String: Any]] = accounts.map { account in
+            let q = quotaValues[account.id]
+            return ["provider": account.provider, "number": displayNumbers[account.id] ?? 0, "email": account.email as Any? ?? null,
+                    "used": q?.weekly?.used as Any? ?? null, "checked": q?.updatedDate?.timeIntervalSince1970 as Any? ?? null,
+                    "reset": q?.weekly?.reset?.timeIntervalSince1970 as Any? ?? null, "error": q?.error != nil,
+                    "primary_present": q?.primary != nil, "primary_used": q?.primary?.used as Any? ?? null,
+                    "primary_reset": q?.primary?.reset?.timeIntervalSince1970 as Any? ?? null]
+        }
+        var recommendations: [String: Any] = [:]
+        for provider in ["codex", "claude"] {
+            if let strip = strips[provider], let id = strip.button.identifier?.rawValue, let number = displayNumbers[id] {
+                recommendations[provider] = ["number": number, "reason": strip.reason.stringValue, "evaluated_at": now.timeIntervalSince1970]
+            }
+        }
+        let snapshot: [String: Any] = ["accounts": rows, "recommendations": recommendations, "refreshing": refreshing]
+        if var data = try? JSONSerialization.data(withJSONObject: snapshot) {
+            data.append(10)
+            mcpQueue.async { try? input.fileHandleForWriting.write(contentsOf: data) }
+        }
     }
     func showAIAnswers(provider: String? = nil) {
         guard let data = aiAdviceData, let advice = validAIAdvice(data, accounts: accounts, quota: quotaValues, now: Date()) else { updateRecommendations(); return }
@@ -1334,7 +1394,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard !state.busy, !refreshing else { return }
         if let mode = fixtureMode { renderFixture(mode); return }
         aiAdviceData = nil
-        refreshing = true; refreshGeneration += 1; let generation = refreshGeneration; updateControls()
+        refreshing = true; publishMCP(); refreshGeneration += 1; let generation = refreshGeneration; updateControls()
         startAnalysisClock("กำลังอ่านโควตา")
         status.stringValue = "กำลังค้นหาบัญชีและอ่านโควตา…"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -1381,7 +1441,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             DispatchQueue.main.async {
                 guard let self, self.refreshGeneration == generation else { return }
-                self.refreshing = false; self.updateControls()
+                self.refreshing = false; self.updateRecommendations(); self.updateControls()
                 self.lastRefresh = Date()
                 let formatter = DateFormatter(); formatter.dateFormat = "HH:mm"; formatter.timeZone = TimeZone(identifier: "Asia/Bangkok")
                 self.status.stringValue = "อัปเดต \(formatter.string(from: Date())) · \(list.accounts.count) บัญชี · รีเฟรชทุก 5 นาทีขณะเปิดแอป · เวลาไทย"
