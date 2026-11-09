@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -56,6 +57,7 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaises(Exception):callback({'accounts':[]})
             self.assertEqual(run.call_count,1)
 
+    @unittest.skipIf(os.name != "posix", "Linux runner fixture requires POSIX executable scripts")
     def test_once_analysis_runs_publisher_pipeline_with_fixture_cli_only(self):
         self.module()
         import os,subprocess,sys,time

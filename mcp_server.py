@@ -126,8 +126,7 @@ class Service:
         else:error={'code':-32601,'message':'Method not found'}
         return {'jsonrpc':'2.0','id':ident,**({'error':error} if error else {'result':result})}
 
-def serve(port=PORT):
-    service=Service()
+def start_http(service,port=PORT):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self,*args):pass
         def reply(self,code,value=None):
@@ -149,6 +148,11 @@ def serve(port=PORT):
             except (ValueError,TypeError):self.reply(400,{'error':{'code':'INVALID_REQUEST','message':'Invalid JSON request'}})
     server=ThreadingHTTPServer(('127.0.0.1',port),Handler);server.daemon_threads=True
     threading.Thread(target=server.serve_forever,daemon=True).start()
+    return server
+
+def serve(port=PORT):
+    service=Service()
+    server=start_http(service,port)
     print(json.dumps({'status':'running','endpoint':f'http://127.0.0.1:{server.server_port}/mcp'}),flush=True)
     try:
         for line in sys.stdin:

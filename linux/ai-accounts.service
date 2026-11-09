@@ -1,0 +1,20 @@
+[Unit]
+Description=AI Accounts local quota and AI decision authority
+After=network-online.target bda-ai-pilot-router.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/lib/ai-accounts/current
+ExecStart=/usr/bin/python3 %h/.local/lib/ai-accounts/current/linux_authority_runner.py --run
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=150
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

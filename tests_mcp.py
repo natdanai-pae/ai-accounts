@@ -65,4 +65,17 @@ class MCPTests(unittest.TestCase):
         calls={node.func.id for node in ast.walk(tree) if isinstance(node,ast.Call) and isinstance(node.func,ast.Name)}
         self.assertNotIn('open',calls)
 
+    def test_embedded_http_reads_supplied_authority_without_stdin(self):
+        import mcp_server as m
+        import json, urllib.request
+        self.assertTrue(hasattr(m,'start_http'),'headless authority HTTP embedding missing')
+        service=m.Service();service.publish({'accounts':[]})
+        server=m.start_http(service,port=0)
+        try:
+            url=f'http://127.0.0.1:{server.server_port}/mcp'
+            req=urllib.request.Request(url,data=json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'ai_accounts_summary','arguments':{}}}).encode(),headers={'Content-Type':'application/json'})
+            result=json.load(urllib.request.urlopen(req,timeout=3))
+            self.assertEqual(result['result']['structuredContent']['providers']['codex']['ready_accounts'],[])
+        finally:server.shutdown();server.server_close()
+
 if __name__=='__main__':unittest.main()
