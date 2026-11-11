@@ -12,7 +12,7 @@ class WindowsTests(unittest.TestCase):
         import ast
         from pathlib import Path
         from unittest.mock import Mock
-        tree=ast.parse(Path(__file__).with_name('windows_gui.py').read_text())
+        tree=ast.parse(Path(__file__).with_name('windows_gui.py').read_text(encoding='utf-8'))
         main=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='main')
         poll=next(n for n in main.body if isinstance(n,ast.FunctionDef) and n.name=='poll')
         root=Mock();handler=Mock(side_effect=RuntimeError('fixture handler error'))
