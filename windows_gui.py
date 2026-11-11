@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from mcp_bridge import Bridge
 
 def system_dpi(user32=None):
     if user32 is None:
@@ -924,7 +925,7 @@ def main():
         try:
             poll_once()
         finally:
-            from mcp_bridge import Bridge
+            root.after(100, poll)
     mcp = Bridge(helper)
     def mcp_settings():
         dialog = tk.Toplevel(root); dialog.title('Settings · MCP'); dialog.geometry('520x280')
@@ -947,8 +948,6 @@ def main():
     if not synthetic:mcp.start()
     def close_app():mcp.stop();root.destroy()
     root.protocol('WM_DELETE_WINDOW',close_app)
-    root.after(100, poll)
-
     def sync_sessions():
         if not state['busy']:
             state['busy'] = True

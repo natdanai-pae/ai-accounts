@@ -3,6 +3,24 @@ import unittest
 from datetime import datetime, timezone, timedelta
 
 class WindowsTests(unittest.TestCase):
+    def test_mcp_bridge_is_bound_before_gui_startup(self):
+        import windows_gui
+        from mcp_bridge import Bridge
+        self.assertIs(getattr(windows_gui,'Bridge',None),Bridge)
+
+    def test_event_poll_reschedules_even_after_handler_error(self):
+        import ast
+        from pathlib import Path
+        from unittest.mock import Mock
+        tree=ast.parse(Path(__file__).with_name('windows_gui.py').read_text())
+        main=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='main')
+        poll=next(n for n in main.body if isinstance(n,ast.FunctionDef) and n.name=='poll')
+        root=Mock();handler=Mock(side_effect=RuntimeError('fixture handler error'))
+        scope={'root':root,'poll_once':handler}
+        exec(compile(ast.Module(body=[poll],type_ignores=[]),'poll-fixture','exec'),scope)
+        with self.assertRaises(RuntimeError):scope['poll']()
+        root.after.assert_called_once_with(100,scope['poll'])
+
     def test_resume_claude_login_preserves_profiles_and_refuses_active_work(self):
         import tempfile
         from unittest.mock import Mock, patch
