@@ -118,8 +118,9 @@ class Service:
         elif method=='tools/list':result={'tools':schemas()}
         elif method=='tools/call':
             name=params.get('name') if isinstance(params,dict) else None
+            arguments=params.get('arguments',{}) if isinstance(params,dict) else None
             try:
-                value=self.call(name,params.get('arguments',{}));result={'content':[{'type':'text','text':json.dumps(value,ensure_ascii=True)}],'structuredContent':value,'isError':False}
+                value=self.call(name,arguments);result={'content':[{'type':'text','text':json.dumps(value,ensure_ascii=True)}],'structuredContent':value,'isError':False}
             except InputError:result={'content':[{'type':'text','text':'{"error":{"code":"INVALID_INPUT","message":"Unknown tool or invalid allowlisted input"}}'}],'structuredContent':{'error':{'code':'INVALID_INPUT','message':'Unknown tool or invalid allowlisted input'}},'isError':True}
             # Never log caller-provided names or values.
             print(json.dumps({'tool':name if isinstance(name,str) and name in {t['name'] for t in schemas()} else 'invalid','time':stamp(time.time()),'status':'error' if result['isError'] else 'ok'}),file=sys.stderr,flush=True)

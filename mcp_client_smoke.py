@@ -25,13 +25,18 @@ async def smoke(endpoint):
    assert bad.is_error
    return results
 if __name__=='__main__':
- p=subprocess.Popen([sys.executable,str(ROOT/'mcp_server.py')],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+ p=subprocess.Popen([sys.executable,'-c','import mcp_server; mcp_server.serve(port=0)'],cwd=ROOT,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
  try:
   handshake=json.loads(p.stdout.readline());endpoint=handshake['endpoint'];now=time.time()
   snapshot={'accounts':[{'provider':provider,'number':i,'email':'private@example.test','used':used,'checked':now,'reset':now+86400} for provider in ('codex','claude') for i,used in ((1,22),(2,50),(3,99))], 'recommendations':{provider:{'number':2,'reason':'Same UI snapshot recommendation','evaluated_at':now} for provider in ('codex','claude')}}
   p.stdin.write(json.dumps(snapshot)+'\n');p.stdin.flush();time.sleep(.1)
   results=asyncio.run(smoke(endpoint));print(json.dumps(results,indent=2))
   import urllib.request,urllib.error
+  for params in (None, [], 'private@example.test', 42):
+   request=urllib.request.Request(endpoint,data=json.dumps({'jsonrpc':'2.0','id':7,'method':'tools/call','params':params}).encode(),headers={'Content-Type':'application/json'})
+   with urllib.request.urlopen(request,timeout=3) as response:
+    error=json.load(response)['result']
+    assert error['isError'] and error['structuredContent']['error']['code']=='INVALID_INPUT'
   for headers in ({'Origin':'https://evil.test'},{'Host':'evil.test:47831'}):
    try:urllib.request.urlopen(urllib.request.Request(endpoint,data=b'{}',headers={'Content-Type':'application/json',**headers}));raise AssertionError('Origin/Host accepted')
    except urllib.error.HTTPError as e:assert e.code==403
@@ -40,5 +45,6 @@ if __name__=='__main__':
  logs=p.stderr.read()
  assert 'private@example.test' not in logs and 'Same UI snapshot' not in logs
  for line in logs.splitlines():assert set(json.loads(line))=={'tool','time','status'}
- with socket.socket() as s:assert s.connect_ex(('127.0.0.1',47831))!=0
+ from urllib.parse import urlsplit
+ with socket.socket() as s:assert s.connect_ex(('127.0.0.1',urlsplit(endpoint).port))!=0
  print('PASS official MCP SDK2.3.0 initialize/list/call all three tools, both providers x3, invalid input, Host/Origin denial, safe logs and stdin-EOF endpoint shutdown.')

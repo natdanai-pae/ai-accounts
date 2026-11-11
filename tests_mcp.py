@@ -65,6 +65,19 @@ class MCPTests(unittest.TestCase):
         calls={node.func.id for node in ast.walk(tree) if isinstance(node,ast.Call) and isinstance(node.func,ast.Name)}
         self.assertNotIn('open',calls)
 
+    def test_malformed_call_params_return_private_structured_errors(self):
+        import contextlib, io, json
+        import mcp_server as m
+        service=m.Service(); logs=io.StringIO()
+        with contextlib.redirect_stderr(logs):
+            for params in (None, [], 'private@example.test', 42):
+                result=service.rpc({'jsonrpc':'2.0','id':7,'method':'tools/call','params':params})
+                self.assertTrue(result['result']['isError'])
+                self.assertEqual(result['result']['structuredContent']['error']['code'],'INVALID_INPUT')
+        for line in logs.getvalue().splitlines():
+            self.assertEqual(set(json.loads(line)),{'tool','time','status'})
+        self.assertNotIn('private@example.test',logs.getvalue())
+
     def test_embedded_http_reads_supplied_authority_without_stdin(self):
         import mcp_server as m
         import json, urllib.request

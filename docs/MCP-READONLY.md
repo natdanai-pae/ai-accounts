@@ -64,7 +64,7 @@ Audited receipt:[mcp/codex-smoke-receipt.json](mcp/codex-smoke-receipt.json). Re
 
 - TDD:2 new projection/validation cases failed before implementation, then passed. Added refresh/stale/unknown/error/near_limit/exhausted, primary-window limits, free-text privacy filter, exactly3read tools and structural no-provider/no-credential-reader dependency checks.
 - Full Python suite:109tests passed with2platform-specific skips. Swift build/self-tests and full Mac package, signature and frozen-helper self-test passed.
-- Official MCP Python SDK2.3.0 initialized/listed/called all3tools against a real HTTP server with Codex3and Claude3fixture accounts; used+remaining=100; UI-supplied winner2retained even when a different quota might tempt another ranking. Invalid input, hostile Host/Origin, logs and stdin-EOF shutdown passed. Reproduce: install mcp==2.3.0 in an isolated environment and run `python mcp_client_smoke.py` with the desktop app closed so the fixture can bind its port.
+- Official MCP Python SDK2.3.0 initialized/listed/called all3tools against a real HTTP server with Codex3and Claude3fixture accounts; used+remaining=100; UI-supplied winner2retained even when a different quota might tempt another ranking. Invalid input, hostile Host/Origin, logs and stdin-EOF shutdown passed. Reproduce: install mcp==2.3.0 in an isolated environment and run `python mcp_client_smoke.py`. The fixture now uses an ephemeral loopback port so it does not collide with the desktop app.
 - Installed Mac native app exposed6real accounts. MCP matched GUI AI winner3for both providers and weekly remaining Codex83/3/0, Claude99/100/94 when tested. Display and MCP were checked in the same refresh cycle. No secret/full email detected in captured MCP responses, metadata logs or shareable examples.
 - Actual Codex desktop-bundled CLI0.167.0-alpha.3.2 invoked ai_accounts_summary successfully. Only the3read tools were advertised; no write tool exists.
 - Native Mac Settings showed Running, endpoint and read-only text. Copy MCP config button exercised. Quit app:TCP connect failed(code61); reopened app for use. Previous app retained in the local backup made before MCP installation.
@@ -83,3 +83,7 @@ Not yet verified: rebuilt/frozen Windows app native Settings/lifecycle; other th
 - tests_mcp.py and mcp_client_smoke.py:structural/unit and official-client acceptance.
 
 No MCP login, logout, switch, refresh, reset, credential deletion or dispatch tool is implemented. MCP code never opens credential files or imports provider adapters. Logs contain only allowlisted tool name, timestamp and ok/error status. Client-supplied invalid names and arguments are not logged. GUI-attached helper stderr is discarded rather than persisted.
+
+## Revalidation — 11 November 2026
+
+See [verification report](mcp/verification-20261111.md) and [sanitized live requests/responses](mcp/live-example-20261111.json). Corrected malformed `tools/call.params` handling to return the same structured INVALID_INPUT error instead of an uncaught exception. Exactly three read-only tools and the shared UI projection remain unchanged. The helper update is installed on this Mac with a retained previous bundle; this does not claim a Windows installer update or a GX10 service deployment.

@@ -1,0 +1,282 @@
+{
+  "recorded_date": "2026-11-11",
+  "scope": "Installed Mac AI Accounts desktop MCP; dated evidence, not a live recommendation",
+  "calls": [
+    {
+      "name": "ai_accounts_status",
+      "arguments": {
+        "provider": "codex"
+      },
+      "response": {
+        "accounts": [
+          {
+            "provider": "codex",
+            "account_number": 2,
+            "account_alias": "Account 2",
+            "identity_masked": "n***@gmail.com",
+            "availability": "ready",
+            "quota_used_percent": 48,
+            "quota_remaining_percent": 52,
+            "quota_checked_at": "2026-11-11T07:21:04Z",
+            "quota_reset_at": "2026-11-13T12:16:32Z",
+            "quota_reset_in_seconds": 190431,
+            "data_fresh": true,
+            "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+          },
+          {
+            "provider": "codex",
+            "account_number": 3,
+            "account_alias": "Account 3",
+            "identity_masked": "k***@gmail.com",
+            "availability": "ready",
+            "quota_used_percent": 0,
+            "quota_remaining_percent": 100,
+            "quota_checked_at": "2026-11-11T07:20:51Z",
+            "quota_reset_at": "2026-11-18T07:20:51Z",
+            "quota_reset_in_seconds": 604690,
+            "data_fresh": true,
+            "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+          },
+          {
+            "provider": "codex",
+            "account_number": 1,
+            "account_alias": "Account 1",
+            "identity_masked": "n***@bda.co.th",
+            "availability": "ready",
+            "quota_used_percent": 0,
+            "quota_remaining_percent": 100,
+            "quota_checked_at": "2026-11-11T07:21:10Z",
+            "quota_reset_at": "2026-11-18T07:21:09Z",
+            "quota_reset_in_seconds": 604708,
+            "data_fresh": true,
+            "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+          }
+        ]
+      }
+    },
+    {
+      "name": "ai_accounts_status",
+      "arguments": {
+        "provider": "claude"
+      },
+      "response": {
+        "accounts": [
+          {
+            "provider": "claude",
+            "account_number": 1,
+            "account_alias": "Account 1",
+            "identity_masked": "n***@bda.co.th",
+            "availability": "ready",
+            "quota_used_percent": 1,
+            "quota_remaining_percent": 99,
+            "quota_checked_at": "2026-11-11T07:21:14Z",
+            "quota_reset_at": "2026-11-14T03:59:59Z",
+            "quota_reset_in_seconds": 247038,
+            "data_fresh": true,
+            "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+          },
+          {
+            "provider": "claude",
+            "account_number": 2,
+            "account_alias": "Account 2",
+            "identity_masked": "n***@gmail.com",
+            "availability": "ready",
+            "quota_used_percent": 0,
+            "quota_remaining_percent": 100,
+            "quota_checked_at": "2026-11-11T07:21:17Z",
+            "quota_reset_at": "2026-11-15T03:59:59Z",
+            "quota_reset_in_seconds": 333438,
+            "data_fresh": true,
+            "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+          },
+          {
+            "provider": "claude",
+            "account_number": 3,
+            "account_alias": "Account 3",
+            "identity_masked": "k***@gmail.com",
+            "availability": "ready",
+            "quota_used_percent": 1,
+            "quota_remaining_percent": 99,
+            "quota_checked_at": "2026-11-11T07:21:20Z",
+            "quota_reset_at": "2026-11-16T15:59:59Z",
+            "quota_reset_in_seconds": 463038,
+            "data_fresh": true,
+            "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+          }
+        ]
+      }
+    },
+    {
+      "name": "ai_accounts_recommend",
+      "arguments": {
+        "provider": "codex",
+        "task_kind": "chat"
+      },
+      "response": {
+        "recommended_account": {
+          "provider": "codex",
+          "account_number": 2,
+          "account_alias": "Account 2",
+          "identity_masked": "n***@gmail.com",
+          "availability": "ready",
+          "quota_used_percent": 48,
+          "quota_remaining_percent": 52,
+          "quota_checked_at": "2026-11-11T07:21:04Z",
+          "quota_reset_at": "2026-11-13T12:16:32Z",
+          "quota_reset_in_seconds": 190431,
+          "data_fresh": true,
+          "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+        },
+        "availability": "ready",
+        "quota_remaining_percent": 52,
+        "reason": "ใช้ข้อมูลรายสัปดาห์ · เหลือ 52%\nเน้นบัญชีพร้อมใช้ แล้วเทียบโควตาต่อเวลาถึงรีเซ็ต",
+        "evaluated_at": "2026-11-11T07:22:29.896230Z",
+        "alternatives": [
+          {
+            "provider": "codex",
+            "account_number": 3,
+            "account_alias": "Account 3",
+            "identity_masked": "k***@gmail.com",
+            "availability": "ready",
+            "quota_used_percent": 0,
+            "quota_remaining_percent": 100,
+            "quota_checked_at": "2026-11-11T07:20:51Z",
+            "quota_reset_at": "2026-11-18T07:20:51Z",
+            "quota_reset_in_seconds": 604690,
+            "data_fresh": true,
+            "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+          },
+          {
+            "provider": "codex",
+            "account_number": 1,
+            "account_alias": "Account 1",
+            "identity_masked": "n***@bda.co.th",
+            "availability": "ready",
+            "quota_used_percent": 0,
+            "quota_remaining_percent": 100,
+            "quota_checked_at": "2026-11-11T07:21:10Z",
+            "quota_reset_at": "2026-11-18T07:21:09Z",
+            "quota_reset_in_seconds": 604708,
+            "data_fresh": true,
+            "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+          }
+        ],
+        "can_dispatch": true,
+        "dispatch_note": "Readiness signal only; this server cannot dispatch or switch. task_kind does not alter UI ranking."
+      }
+    },
+    {
+      "name": "ai_accounts_recommend",
+      "arguments": {
+        "provider": "claude",
+        "task_kind": "implementation"
+      },
+      "response": {
+        "recommended_account": {
+          "provider": "claude",
+          "account_number": 1,
+          "account_alias": "Account 1",
+          "identity_masked": "n***@bda.co.th",
+          "availability": "ready",
+          "quota_used_percent": 1,
+          "quota_remaining_percent": 99,
+          "quota_checked_at": "2026-11-11T07:21:14Z",
+          "quota_reset_at": "2026-11-14T03:59:59Z",
+          "quota_reset_in_seconds": 247038,
+          "data_fresh": true,
+          "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+        },
+        "availability": "ready",
+        "quota_remaining_percent": 99,
+        "reason": "ใช้ข้อมูลรายสัปดาห์ · เหลือ 99%\nเน้นบัญชีพร้อมใช้ แล้วเทียบโควตาต่อเวลาถึงรีเซ็ต",
+        "evaluated_at": "2026-11-11T07:22:29.896230Z",
+        "alternatives": [
+          {
+            "provider": "claude",
+            "account_number": 2,
+            "account_alias": "Account 2",
+            "identity_masked": "n***@gmail.com",
+            "availability": "ready",
+            "quota_used_percent": 0,
+            "quota_remaining_percent": 100,
+            "quota_checked_at": "2026-11-11T07:21:17Z",
+            "quota_reset_at": "2026-11-15T03:59:59Z",
+            "quota_reset_in_seconds": 333438,
+            "data_fresh": true,
+            "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+          },
+          {
+            "provider": "claude",
+            "account_number": 3,
+            "account_alias": "Account 3",
+            "identity_masked": "k***@gmail.com",
+            "availability": "ready",
+            "quota_used_percent": 1,
+            "quota_remaining_percent": 99,
+            "quota_checked_at": "2026-11-11T07:21:20Z",
+            "quota_reset_at": "2026-11-16T15:59:59Z",
+            "quota_reset_in_seconds": 463038,
+            "data_fresh": true,
+            "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+          }
+        ],
+        "can_dispatch": true,
+        "dispatch_note": "Readiness signal only; this server cannot dispatch or switch. task_kind does not alter UI ranking."
+      }
+    },
+    {
+      "name": "ai_accounts_summary",
+      "arguments": {},
+      "response": {
+        "providers": {
+          "codex": {
+            "ready_accounts": [
+              2,
+              3,
+              1
+            ],
+            "recommended_account": {
+              "provider": "codex",
+              "account_number": 2,
+              "account_alias": "Account 2",
+              "identity_masked": "n***@gmail.com",
+              "availability": "ready",
+              "quota_used_percent": 48,
+              "quota_remaining_percent": 52,
+              "quota_checked_at": "2026-11-11T07:21:04Z",
+              "quota_reset_at": "2026-11-13T12:16:32Z",
+              "quota_reset_in_seconds": 190431,
+              "data_fresh": true,
+              "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+            },
+            "attention_accounts": []
+          },
+          "claude": {
+            "ready_accounts": [
+              1,
+              2,
+              3
+            ],
+            "recommended_account": {
+              "provider": "claude",
+              "account_number": 1,
+              "account_alias": "Account 1",
+              "identity_masked": "n***@bda.co.th",
+              "availability": "ready",
+              "quota_used_percent": 1,
+              "quota_remaining_percent": 99,
+              "quota_checked_at": "2026-11-11T07:21:14Z",
+              "quota_reset_at": "2026-11-14T03:59:59Z",
+              "quota_reset_in_seconds": 247038,
+              "data_fresh": true,
+              "note": "Weekly quota. used=consumed; remaining=100-used. Primary window also gates availability when supplied. No refresh or dispatch."
+            },
+            "attention_accounts": []
+          }
+        },
+        "quota_checked_at": "2026-11-11T07:21:20Z",
+        "warning": null
+      }
+    }
+  ]
+}
