@@ -1,0 +1,39 @@
+{
+  "version": "0.3.0-beta.6",
+  "revision": "d0e6ed5dc6c9dffe353d520ec761e15e7998a3e6",
+  "runId": 42984291939,
+  "tests": {
+    "macos": {
+      "tests": 140,
+      "skipped": 2,
+      "official_mcp_source_and_frozen": "pass"
+    },
+    "windows": {
+      "tests": 140,
+      "skipped": 11,
+      "official_mcp_source_and_frozen": "pass"
+    },
+    "gx10": {
+      "targeted_tests": 33,
+      "live_accounts": 6,
+      "live_mcp_chat_worker": "pass"
+    }
+  },
+  "assets": [
+    {
+      "name": "AI-Accounts-0.3.0-beta.6-macos-arm64.zip",
+      "bytes": 128697616,
+      "sha256": "b5b114d258953106b0195a4a1ac336b9cd60905d52ed259919fd285f10c895f1"
+    },
+    {
+      "name": "AI-Accounts-0.3.0-beta.6-macos-arm64.dmg",
+      "bytes": 143202297,
+      "sha256": "bf08d468ff0dd853d9dbdcf9ff21f5d1024212ffa2e6939908fba7ad03983100"
+    },
+    {
+      "name": "AI-Accounts-0.3.0-beta.6-windows-x64.zip",
+      "bytes": 166692984,
+      "sha256": "1c83ab4fadb857f28c693972e0c25b67b0b6ee627f913d0bb634c7829f096d2c"
+    }
+  ]
+}

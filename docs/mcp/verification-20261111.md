@@ -63,3 +63,7 @@ Actual tool request:
 Observed answer at the captured cycle: Codex account 2, 52% remaining; Claude account 1, 99% remaining; data fresh. The JSON artifact contains the full masked structured response.
 
 Not tested this task: frozen Windows Settings/lifecycle, Windows installation of this fix, arbitrary third-party clients, sustained multi-client load or all possible adversarial secret encodings. No public installer/GitHub release was updated. The tested response/log captures contain no secrets; this is not a guarantee about arbitrary future upstream free text. Exactly three read tools exist; no login, switch, token refresh, logout, credential deletion or dispatch tool exists.
+
+## Subsequent authorized deployment and release
+
+The follow-up owner request deployed the fix on GX10-3 and published [Beta6 for Mac/Windows](https://github.com/natdanai-pae/ai-accounts/releases/tag/v0.3.0-beta.6). Final source d0e6ed5, CI42984291939: Mac140tests/2platformskips, Windows140tests/11platformskips; source and packaged-helper official SDK smoke passed on both. Windows frozen GUI self-test also passed after Bridge/startup/poll fixes. GX10 live MCP, read-only logs/state, actual chat and actual Pool tests passed while preserving existing work. Thus the earlier “no public release” and “frozen Windows package untested” statements describe the initial verification stage only. Personal-PC Windows installation and human Settings/clipboard validation remain unperformed; no claim of those is made.
