@@ -25,7 +25,12 @@ async def smoke(endpoint):
    assert bad.is_error
    return results
 if __name__=='__main__':
- p=subprocess.Popen([sys.executable,'-c','import mcp_server; mcp_server.serve(port=0)'],cwd=ROOT,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+ import argparse
+ parser=argparse.ArgumentParser(description='Read-only MCP source or frozen-helper acceptance')
+ parser.add_argument('--helper',type=Path)
+ args=parser.parse_args()
+ command=[str(args.helper.resolve()),'mcp-serve'] if args.helper else [sys.executable,'-c','import mcp_server; mcp_server.serve(port=0)']
+ p=subprocess.Popen(command,cwd=ROOT,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
  try:
   handshake=json.loads(p.stdout.readline());endpoint=handshake['endpoint'];now=time.time()
   snapshot={'accounts':[{'provider':provider,'number':i,'email':'private@example.test','used':used,'checked':now,'reset':now+86400} for provider in ('codex','claude') for i,used in ((1,22),(2,50),(3,99))], 'recommendations':{provider:{'number':2,'reason':'Same UI snapshot recommendation','evaluated_at':now} for provider in ('codex','claude')}}

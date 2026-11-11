@@ -18,10 +18,19 @@ jobs:
           go-version: '1.24.2'
           cache: false
       - name: Install pinned build tools
-        run: python -m pip install pyinstaller==6.22.3 cryptography==50.0.2
+        run: python -m pip install pyinstaller==6.22.3 cryptography==50.0.2 mcp==2.3.0
       - name: Build and smoke test Windows app
         shell: pwsh
         run: ./build-windows.ps1
+      - name: Verify source and packaged MCP with official client
+        shell: pwsh
+        run: |
+          python mcp_client_smoke.py
+          if ($LASTEXITCODE -ne 0) { throw 'Source MCP acceptance failed' }
+          $unpack = Join-Path $env:RUNNER_TEMP 'mcp-package'
+          Expand-Archive -LiteralPath dist/AI-Accounts-0.3.0-windows-x64.zip -DestinationPath $unpack
+          python mcp_client_smoke.py --helper "$unpack/AI Accounts/backend/aiaccounts-helper.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged MCP acceptance failed' }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-x64
@@ -41,9 +50,16 @@ jobs:
           go-version: '1.24.2'
           cache: false
       - name: Install pinned build tools
-        run: python -m pip install pyinstaller==6.22.3 cryptography==50.0.2
+        run: python -m pip install pyinstaller==6.22.3 cryptography==50.0.2 mcp==2.3.0
+      - name: Test macOS source
+        run: python -m unittest discover -p 'tests_*.py'
       - name: Build macOS app
         run: AI_ACCOUNTS_BUILD_PYTHON="$(command -v python)" bash package-release.sh
+      - name: Verify source and packaged MCP with official client
+        run: |
+          python mcp_client_smoke.py
+          ditto -x -k dist/AI-Accounts-0.3.0-macos-arm64.zip "$RUNNER_TEMP/mcp-package"
+          python mcp_client_smoke.py --helper "$RUNNER_TEMP/mcp-package/AI Accounts.app/Contents/Resources/backend/aiaccounts-helper"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos-arm64
