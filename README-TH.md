@@ -2,7 +2,7 @@
 
 จัดการบัญชี Codex และ Claude หลายบัญชี เพิ่มบัญชีผ่านการเข้าสู่ระบบของผู้ให้บริการ อ่าน quota และแนะนำบัญชีแยกตามผู้ให้บริการโดยไม่สลับอัตโนมัติ รวม helper/runtime มาแล้ว ผู้ใช้ไม่ต้องติดตั้ง Python, Go หรือ Homebrew
 
-> รุ่น Beta สำหรับ macOS Apple Silicon และ Windows x64: ดาวน์โหลด [Windows Beta 5](https://github.com/natdanai-pae/ai-accounts/releases/tag/v0.3.0-beta.5) / [Mac Beta 4](https://github.com/natdanai-pae/ai-accounts/releases/tag/v0.3.0-beta.4) พร้อมอ่านข้อจำกัดและตรวจ SHA256 ก่อนใช้งาน ไฟล์ยังไม่มี Developer ID notarization / Windows publisher certificate จึงอาจมีคำเตือนผู้พัฒนาจากระบบปฏิบัติการ
+> รุ่น Beta สำหรับ macOS Apple Silicon และ Windows x64: ดาวน์โหลด [Mac และ Windows Beta 6](https://github.com/natdanai-pae/ai-accounts/releases/tag/v0.3.0-beta.6) พร้อมอ่านข้อจำกัดและตรวจ SHA256 ก่อนใช้งาน ไฟล์ยังไม่มี Developer ID notarization / Windows publisher certificate จึงอาจมีคำเตือนผู้พัฒนาจากระบบปฏิบัติการ
 
 ## คู่มือและผลตรวจล่าสุด
 
@@ -98,3 +98,7 @@ Claude แชร์เฉพาะ local session ของแท็บ Code แ�
 ขอบคุณ [Claude Switcher — beyondworks](https://github.com/beyondworks/claude-switcher), [CodexSwitch — scwen](https://github.com/ScWen7/CodexSwitch), [CodexBar — Peter Steinberger](https://github.com/steipete/CodexBar) และ [OpenAI Codex](https://github.com/openai/codex) ดู [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) และ license ที่รวมมากับแพ็กเกจ โครงการนี้ไม่ใช่ผลิตภัณฑ์อย่างเป็นทางการของ OpenAI หรือ Anthropic
 
 ข้อจำกัด: ยังไม่ถือว่าทดสอบผ่านบน Mac/Windows เครื่องใหม่หรือบัญชีใหม่ทุกชนิด ไม่มีการทดสอบ login/switch จริงอัตโนมัติ การเปลี่ยน API/cookie อาจทำให้ Connect/usage ต้องปรับปรุง ผล fixture/CI ไม่เท่ากับการยืนยันการใช้งานจริง
+
+## MCP อ่านสถานะเท่านั้น
+
+เปิด Settings → MCP เพื่อดู endpoint ในเครื่องและ Copy config ให้ Codex/AI อ่านสถานะ โควตา และคำแนะนำชุดเดียวกับหน้าจอ ผ่าน `ai_accounts_status`, `ai_accounts_recommend`, `ai_accounts_summary` โดยไม่รีเฟรช ไม่วิเคราะห์ AI ไม่สลับบัญชี และไม่ส่ง credential ผ่าน MCP ดู [วิธีเชื่อมต่อและ lifecycle](docs/MCP-READONLY.md) — ฝั่ง Desktop ต้องเปิดแอปค้างไว้ ส่วนบริการ headless บน GX10 ทำงานแยกจาก Mac
